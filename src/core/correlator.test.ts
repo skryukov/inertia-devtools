@@ -1181,6 +1181,74 @@ describe('Correlator', () => {
     })
   })
 
+  describe('wire data from lifecycle events', () => {
+    it('captures prefetch response wire data from inertia:prefetched', () => {
+      const visit = makeVisitObject({ prefetch: true })
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit }, 101))
+      const record = correlator.processEvent(
+        makeEvent(
+          'inertia:prefetched',
+          {
+            visit,
+            fetchedAt: 200,
+            response: { status: 200, data: '{"component":"Users"}', headers: { 'x-inertia': 'true' } },
+          },
+          200,
+        ),
+      )
+
+      expect(record).not.toBeNull()
+      expect(record!.wire?.response).toMatchObject({ status: 200, headers: { 'x-inertia': 'true' } })
+      expect(record!.status).toBe(200)
+    })
+
+    it('captures exception response wire data from inertia:httpException', () => {
+      const visit = makeVisitObject()
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      const record = correlator.processEvent(
+        makeEvent(
+          'inertia:httpException',
+          { response: { status: 500, data: '<html>oops</html>', headers: { 'content-type': 'text/html' } } },
+          145,
+        ),
+      )
+
+      expect(record!.status).toBe(500)
+      expect(record!.wire?.response).toMatchObject({
+        status: 500,
+        headers: { 'content-type': 'text/html' },
+      })
+    })
+
+    it('interceptor wire data does not overwrite via prefetched when already present', () => {
+      const visit = makeVisitObject({ prefetch: true })
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit }, 101))
+
+      // Interceptor attached first (hypothetically)
+      correlator.attachWireResponse(visit.id as string, {
+        status: 200,
+        headers: { source: 'interceptor' },
+        finishedAt: 150,
+      })
+
+      correlator.processEvent(
+        makeEvent('inertia:prefetched', { visit, response: { status: 200, headers: { source: 'event' } } }, 200),
+      )
+
+      const record = correlator.getRequests()[0]
+      expect(record.wire?.response?.headers).toEqual({ source: 'interceptor' })
+    })
+
+    it('attachWireRequest returns null for unknown ids', () => {
+      expect(
+        correlator.attachWireRequest('nope', { method: 'GET', url: '/x', headers: {}, startedAt: 1 }),
+      ).toBeNull()
+    })
+  })
+
   describe('network timing correlation', () => {
     it('matches timing to visit by URL and timing', () => {
       const visit = makeVisitObject()

@@ -72,7 +72,42 @@ export interface RequestRecord {
   visitOptions?: Record<string, unknown>
   diagnostics: Diagnostic[]
   network?: NetworkTiming
+  wire?: WireData
 }
+
+/** Request wire data captured via Inertia's dev-mode interceptors. */
+export interface WireRequestData {
+  method: string
+  url: string
+  headers: Record<string, string>
+  startedAt: number
+}
+
+/**
+ * Response wire data. Captured via the response interceptor for 2xx Inertia
+ * responses; prefetch responses and HTTP exceptions bypass the interceptor
+ * and are extracted from the inertia:prefetched / inertia:httpException events.
+ */
+export interface WireResponseData {
+  status: number
+  headers: Record<string, string>
+  bodySize?: number
+  finishedAt: number
+}
+
+/** Actual request/response data from the wire (vs reconstructed client-side). */
+export interface WireData {
+  request?: WireRequestData
+  response?: WireResponseData
+}
+
+/**
+ * How network data is being captured.
+ * - 'pending': interceptor availability not yet determined (no events seen)
+ * - 'interceptors': subscribed to window.__inertia_interceptors__ (full wire data)
+ * - 'fallback': interceptors unavailable (app sets dev: false) — PerformanceObserver timing only
+ */
+export type NetworkCaptureMode = 'pending' | 'interceptors' | 'fallback'
 
 /** Severity level for inline diagnostics */
 export type DiagnosticSeverity = 'warning' | 'error' | 'info'
@@ -93,6 +128,7 @@ export interface DevToolsState {
   requests: RequestRecord[]
   currentPage: InertiaPage | null
   evictedCount: number
+  networkCaptureMode: NetworkCaptureMode
   /** Monotonically increasing counter; changes on every state update. */
   tick: number
 }

@@ -7,7 +7,10 @@ import type {
   DevToolsState,
   DevToolsOptions,
   DocsProvider,
+  NetworkCaptureMode,
   SessionRequestSummary,
+  WireRequestData,
+  WireResponseData,
 } from './types'
 import type { NetworkTiming } from './network'
 import { saveSession, loadSession, clearSession } from './session'
@@ -29,6 +32,7 @@ export class DevToolsStore {
   private options: DevToolsOptions
   private previousSession: ReturnType<typeof loadSession> = null
   private saveTimer: ReturnType<typeof setTimeout> | undefined
+  private networkCaptureMode: NetworkCaptureMode = 'pending'
 
   constructor(options: DevToolsOptions = {}) {
     this.options = options
@@ -75,6 +79,7 @@ export class DevToolsStore {
       requests: this.requests,
       currentPage: this.currentPage,
       evictedCount: this.evictedCount,
+      networkCaptureMode: this.networkCaptureMode,
       tick: this.tick,
     }
   }
@@ -117,6 +122,28 @@ export class DevToolsStore {
   captureNetworkTiming(timing: NetworkTiming): void {
     this.correlator.linkNetworkTiming(timing)
     this.notify()
+  }
+
+  // --- Wire data (interceptors) ---
+
+  setNetworkCaptureMode(mode: NetworkCaptureMode): void {
+    if (this.networkCaptureMode === mode) return
+    this.networkCaptureMode = mode
+    this.notify()
+  }
+
+  /** Attach request wire data (from the request interceptor) by Inertia visit UUID. */
+  attachWireRequest(inertiaVisitId: string, request: WireRequestData): void {
+    if (this.correlator.attachWireRequest(inertiaVisitId, request)) {
+      this.notify()
+    }
+  }
+
+  /** Attach response wire data (from the response interceptor) by Inertia visit UUID. */
+  attachWireResponse(inertiaVisitId: string, response: WireResponseData): void {
+    if (this.correlator.attachWireResponse(inertiaVisitId, response)) {
+      this.notify()
+    }
   }
 
   // --- Subscription ---

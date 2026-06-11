@@ -1,6 +1,15 @@
 import type { InertiaPage } from './protocol'
-import type { CapturedEvent, RequestRecord, ActiveFeature, VisitType, InertiaVisitDetail } from './types'
+import type {
+  CapturedEvent,
+  RequestRecord,
+  ActiveFeature,
+  VisitType,
+  InertiaVisitDetail,
+  WireRequestData,
+  WireResponseData,
+} from './types'
 import type { NetworkTiming } from './network'
+import { wireBodySize } from './interceptors'
 import { extractFeatures, extractPageFeatures } from './features'
 import { computeDiagnostics } from './diagnostics'
 import { normalizeUrl } from './url'
@@ -109,6 +118,29 @@ export class Correlator {
     this._evictedCount = 0
     this.nextVisitId = 1
     // Note: lastPage is NOT cleared -- it represents the current app state
+  }
+
+  /**
+   * Attach request wire data (from the request interceptor) by Inertia visit UUID.
+   * The interceptor fires inside Request.send(), after the before/start events
+   * created the record — a miss means the record was evicted; drop silently.
+   */
+  attachWireRequest(uuid: string, request: WireRequestData): RequestRecord | null {
+    const record = this.resolveByUuid(uuid)
+    if (!record) return null
+    record.wire = { ...record.wire, request }
+    return record
+  }
+
+  /** Attach response wire data (from the response interceptor) by Inertia visit UUID. */
+  attachWireResponse(uuid: string, response: WireResponseData): RequestRecord | null {
+    const record = this.resolveByUuid(uuid)
+    if (!record) return null
+    record.wire = { ...record.wire, response }
+    if (record.status === undefined && response.status > 0) {
+      record.status = response.status
+    }
+    return record
   }
 
   /**
@@ -462,6 +494,10 @@ export class Correlator {
       if (response) {
         record.status = response.status as number
 
+        // Response interceptors only fire for 2xx Inertia responses — for
+        // exceptions the event payload is the only source of wire data.
+        record.wire = { ...record.wire, response: this.wireResponseFromPayload(response, event.timestamp) }
+
         // 409 means a server-initiated redirect (version mismatch or inertia_location).
         // The client will do a full page reload — no inertia:navigate fires.
         if (record.status === 409) {
@@ -474,6 +510,16 @@ export class Correlator {
       }
     } else if (event.name === 'inertia:networkError') {
       record.error = detail.error
+    } else if (event.name === 'inertia:prefetched') {
+      // Prefetch responses bypass the response interceptor (handlePrefetch
+      // returns before setPage) — capture wire data from the event instead.
+      const response = detail.response as Record<string, unknown> | undefined
+      if (response && !record.wire?.response) {
+        record.wire = { ...record.wire, response: this.wireResponseFromPayload(response, event.timestamp) }
+        if (record.status === undefined && typeof response.status === 'number') {
+          record.status = response.status
+        }
+      }
     }
 
     record.diagnostics = computeDiagnostics(record)
@@ -609,6 +655,16 @@ export class Correlator {
     this.records.delete(record.visitId)
     if (record.inertiaVisitId) this.uuidMap.delete(record.inertiaVisitId)
     this._evictedCount++
+  }
+
+  /** Build WireResponseData from an event payload's { status, data, headers }. */
+  private wireResponseFromPayload(response: Record<string, unknown>, timestamp: number): WireResponseData {
+    return {
+      status: typeof response.status === 'number' ? response.status : 0,
+      headers: { ...((response.headers as Record<string, string> | undefined) ?? {}) },
+      bodySize: wireBodySize(response.data),
+      finishedAt: timestamp,
+    }
   }
 
   // --- Visit extraction helper ---

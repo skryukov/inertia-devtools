@@ -1,5 +1,6 @@
 import { DevToolsStore } from './core/store'
 import { startCapture } from './core/capture'
+import { startInterceptorCapture } from './core/interceptors'
 import { startNetworkCapture } from './core/network'
 import type { DevToolsOptions } from './core/types'
 
@@ -38,7 +39,12 @@ function init(options: DevToolsOptions): void {
   // via the inertia:clientVisit event — no history API patching needed)
   startCapture(store)
 
-  // Start capturing network timing via PerformanceObserver
+  // Capture wire data (headers/status/body size) via Inertia's dev-mode
+  // interceptors; subscribes lazily since createInertiaApp() runs after us
+  startInterceptorCapture(store)
+
+  // PerformanceObserver supplies timing/transferSize, and is the only
+  // network source when interceptors are unavailable (dev: false)
   startNetworkCapture(
     (url) => store.isInertiaRequestUrl(url),
     (timing) => store.captureNetworkTiming(timing),
