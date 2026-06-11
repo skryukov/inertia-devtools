@@ -47,7 +47,7 @@
     "svelte"
   ],
   "peerDependencies": {
-    "@inertiajs/core": ">=2.0.0"
+    "@inertiajs/core": ">=3.4.0"
   },
   "peerDependenciesMeta": {
     "@inertiajs/core": {
@@ -55,7 +55,7 @@
     }
   },
   "devDependencies": {
-    "@inertiajs/core": "^2.0.0",
+    "@inertiajs/core": "^3.4.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@testing-library/svelte": "^5.0.0",
     "jsdom": "^28.1.0",

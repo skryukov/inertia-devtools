@@ -46,6 +46,8 @@ export interface ActiveFeature {
  */
 export interface RequestRecord {
   visitId: number
+  /** Inertia's own visit UUID (visit.id / detail.visitId), when the event carried one. */
+  inertiaVisitId?: string
   parentVisitId?: number
   type: VisitType
   method: string

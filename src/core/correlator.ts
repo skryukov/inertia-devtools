@@ -61,9 +61,6 @@ export class Correlator {
       case 'inertia:finish':
         return this.handleFinish(event, detail, timestamp)
 
-      case 'inertia:cancel': // v2 only
-        return this.handleCancel(event)
-
       case 'inertia:navigate':
         return this.handleNavigate(event, detail)
 
@@ -328,15 +325,6 @@ export class Correlator {
     return record
   }
 
-  private handleCancel(event: CapturedEvent): RequestRecord | null {
-    const record = this.resolveByFingerprint(event) ?? this.resolveByActiveId()
-    if (!record) return null
-
-    record.events.push(event)
-    record.cancelled = true
-    return record
-  }
-
   private handleNavigate(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
     const page = detail.page as InertiaPage | undefined
 
@@ -446,11 +434,10 @@ export class Correlator {
 
     record.events.push(event)
 
-    // Extract status/errors from outcome events (v2 + v3 names)
+    // Extract status/errors from outcome events
     if (event.name === 'inertia:error') {
       record.error = detail.errors
-    } else if (event.name === 'inertia:invalid' || event.name === 'inertia:httpException') {
-      // v2: inertia:invalid, v3: inertia:httpException — both carry { response }
+    } else if (event.name === 'inertia:httpException') {
       const response = detail.response as Record<string, unknown> | undefined
       if (response) {
         record.status = response.status as number
@@ -465,9 +452,8 @@ export class Correlator {
           }
         }
       }
-    } else if (event.name === 'inertia:exception' || event.name === 'inertia:networkError') {
-      // v2: inertia:exception, v3: inertia:networkError — both carry { exception }
-      record.error = detail.exception
+    } else if (event.name === 'inertia:networkError') {
+      record.error = detail.error
     }
 
     record.diagnostics = computeDiagnostics(record)

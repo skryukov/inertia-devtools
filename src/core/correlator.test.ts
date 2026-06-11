@@ -173,18 +173,6 @@ describe('Correlator', () => {
     })
   })
 
-  describe('cancelled visits', () => {
-    it('marks visit as cancelled on cancel event', () => {
-      const visit = makeVisitObject()
-
-      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
-      correlator.processEvent(makeEvent('inertia:cancel', {}, 105))
-
-      const requests = correlator.getRequests()
-      expect(requests[0].cancelled).toBe(true)
-    })
-  })
-
   describe('error events', () => {
     it('captures validation errors', () => {
       const visit = makeVisitObject()
@@ -197,28 +185,6 @@ describe('Correlator', () => {
       expect(requests[0].error).toEqual(errors)
     })
 
-    it('captures exception', () => {
-      const visit = makeVisitObject()
-      const exception = new Error('Network error')
-
-      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
-      correlator.processEvent(makeEvent('inertia:exception', { exception }, 145))
-
-      const requests = correlator.getRequests()
-      expect(requests[0].error).toBe(exception)
-    })
-
-    it('captures invalid response status', () => {
-      const visit = makeVisitObject()
-      const response = { status: 500, data: '<html>Error</html>' }
-
-      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
-      correlator.processEvent(makeEvent('inertia:invalid', { response }, 145))
-
-      const requests = correlator.getRequests()
-      expect(requests[0].status).toBe(500)
-    })
-
     it('detects 409 redirect with X-Inertia-Location', () => {
       const visit = makeVisitObject({ method: 'post', url: new URL('http://localhost/posts') })
       const response = {
@@ -227,7 +193,7 @@ describe('Correlator', () => {
       }
 
       correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
-      correlator.processEvent(makeEvent('inertia:invalid', { response }, 145))
+      correlator.processEvent(makeEvent('inertia:httpException', { response }, 145))
 
       const requests = correlator.getRequests()
       expect(requests[0].type).toBe('redirect')
@@ -240,23 +206,22 @@ describe('Correlator', () => {
       const response = { status: 409 }
 
       correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
-      correlator.processEvent(makeEvent('inertia:invalid', { response }, 145))
+      correlator.processEvent(makeEvent('inertia:httpException', { response }, 145))
 
       const requests = correlator.getRequests()
       expect(requests[0].type).toBe('redirect')
       expect(requests[0].redirectUrl).toBeUndefined()
     })
 
-    // v3 event names
-    it('captures networkError (v3 exception)', () => {
+    it('captures networkError', () => {
       const visit = makeVisitObject()
-      const exception = new Error('Network error')
+      const error = new Error('Network error')
 
       correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
-      correlator.processEvent(makeEvent('inertia:networkError', { exception }, 145))
+      correlator.processEvent(makeEvent('inertia:networkError', { error }, 145))
 
       const requests = correlator.getRequests()
-      expect(requests[0].error).toBe(exception)
+      expect(requests[0].error).toBe(error)
     })
 
     it('captures httpException status (v3 invalid)', () => {

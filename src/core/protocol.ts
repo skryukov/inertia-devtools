@@ -26,14 +26,12 @@ export const INERTIA_DOM_EVENTS = [
   'inertia:progress',
   'inertia:success',
   'inertia:error',
-  'inertia:invalid', // v2 (non-Inertia response)
-  'inertia:httpException', // v3 (replaces invalid)
-  'inertia:exception', // v2 (network/JS error)
-  'inertia:networkError', // v3 (replaces exception)
+  'inertia:httpException', // non-Inertia response (4xx/5xx)
+  'inertia:networkError', // network/JS error
   'inertia:finish',
-  'inertia:cancel', // v2 only (v3 uses finish with cancelled flag)
   'inertia:beforeUpdate',
   'inertia:navigate',
+  'inertia:clientVisit', // router.push/replace/replaceProp/appendToProp/prependToProp
   'inertia:flash',
   'inertia:prefetching',
   'inertia:prefetched',
