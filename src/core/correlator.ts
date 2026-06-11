@@ -9,7 +9,7 @@ import type {
   WireResponseData,
 } from './types'
 import type { NetworkTiming } from './network'
-import { visitUuid, wireBodySize } from './interceptors'
+import { visitUuid, wireBodySize } from './wire'
 import { extractFeatures, extractPageFeatures } from './features'
 import { computeDiagnostics } from './diagnostics'
 import { normalizeUrl } from './url'
@@ -274,7 +274,9 @@ export class Correlator {
       }
     }
 
-    const record = this.resolveByUuid(uuid) ?? this.resolveInFlight()
+    // Explicit ids resolve exactly or not at all; the in-flight fallback only
+    // serves genuinely id-less (pre-3.4) payloads.
+    const record = uuid ? this.resolveByUuid(uuid) : this.resolveInFlight()
     if (record) {
       record.events.push(event)
     }
@@ -283,7 +285,8 @@ export class Correlator {
 
   private handleFinish(event: CapturedEvent, detail: Record<string, unknown>, timestamp: number): RequestRecord | null {
     const visit = this.extractVisit(detail)
-    const record = this.resolveByUuid(visitUuid(visit)) ?? this.resolveInFlight()
+    const uuid = visitUuid(visit)
+    const record = uuid ? this.resolveByUuid(uuid) : this.resolveInFlight()
     if (!record) return null
 
     record.events.push(event)
@@ -326,18 +329,24 @@ export class Correlator {
     const page = detail.page as InertiaPage | undefined
     const visitId = typeof detail.visitId === 'string' ? detail.visitId : undefined
 
-    // Update global page state
+    // Snapshot the pre-navigate page state before updating it — synthetic
+    // records created below need it as their diff baseline.
+    const previousPage = this.lastPage ?? undefined
     if (page) {
       this.lastPage = page
     }
 
-    // Exact match by visit UUID; for id-less navigates (defensive), fall back to
-    // the most recent in-flight non-deferred record. Deferred reloads are excluded
-    // because their navigates always carry the deferred visit's own id in 3.4 —
-    // an id-less navigate racing an in-flight deferred reload belongs elsewhere.
-    let record = this.resolveByUuid(visitId) ?? (visitId ? null : this.resolveInFlight({ excludeDeferred: true }))
+    // Exact match by visit UUID; for id-less navigates (history restores), fall
+    // back to the most recent in-flight record that can actually receive a
+    // navigate: deferred reloads' navigates always carry their own id in 3.4,
+    // and prefetch requests never receive a navigate at all.
+    let record =
+      this.resolveByUuid(visitId) ??
+      (visitId ? null : this.resolveInFlight({ excludeDeferred: true, excludePrefetch: true }))
 
-    // Initial page load: navigate fires with an id no before-event introduced
+    // No matching visit: the initial page load, a history restore, or the
+    // navigate that router.push() fires just before its clientVisit event
+    // (handleClientVisit converts the record when that follows).
     if (!record && page) {
       const recordId = this.nextVisitId++
       record = {
@@ -346,7 +355,9 @@ export class Correlator {
         type: 'full',
         method: 'GET',
         url: page.url ?? '/',
-        startedAt: 0,
+        // True initial load (no prior page state) keeps the startedAt-0 marker;
+        // mid-session synthetic records use real timestamps so they sort correctly.
+        startedAt: previousPage ? event.timestamp : 0,
         finishedAt: event.timestamp,
         duration: 0,
         events: [],
@@ -356,6 +367,7 @@ export class Correlator {
         interrupted: false,
         completed: true,
         page,
+        previousPage,
       }
       this.insertRecord(record)
       if (visitId) this.uuidMap.set(visitId, recordId)
@@ -452,13 +464,36 @@ export class Correlator {
     if (!page) return null
 
     const inertiaVisitId = typeof detail.visitId === 'string' ? detail.visitId : undefined
+    const method = detail.replace === true ? 'REPLACE' : 'PUSH'
+
+    // router.push() (replace: false) fires inertia:navigate with this visit's id
+    // BEFORE inertia:clientVisit — handleNavigate already created a synthetic
+    // record for it. Convert that record in place instead of duplicating it;
+    // its previousPage (snapshotted pre-navigate) is the correct diff baseline.
+    const existing = this.resolveByUuid(inertiaVisitId)
+    if (existing) {
+      existing.type = 'client'
+      existing.method = method
+      existing.url = page.url ?? existing.url
+      existing.events.push(event)
+      existing.page = page
+      existing.features = this.extractPageFeatures(page)
+      existing.completed = true
+      if (!existing.finishedAt) {
+        existing.finishedAt = event.timestamp
+        existing.duration = 0
+      }
+      this.lastPage = page
+      return existing
+    }
+
     const visitId = this.nextVisitId++
 
     const record: RequestRecord = {
       visitId,
       inertiaVisitId,
       type: 'client',
-      method: detail.replace === true ? 'REPLACE' : 'PUSH',
+      method,
       url: page.url ?? '/',
       startedAt: event.timestamp,
       finishedAt: event.timestamp,
@@ -492,7 +527,9 @@ export class Correlator {
     } else if (event.name === 'inertia:httpException') {
       const response = detail.response as Record<string, unknown> | undefined
       if (response) {
-        record.status = response.status as number
+        if (typeof response.status === 'number') {
+          record.status = response.status
+        }
 
         // Response interceptors only fire for 2xx Inertia responses — for
         // exceptions the event payload is the only source of wire data.
@@ -599,11 +636,12 @@ export class Correlator {
    * Fallback for events that carry no visit id: the most recently started
    * record that has not finished yet.
    */
-  private resolveInFlight(options?: { excludeDeferred?: boolean }): RequestRecord | null {
+  private resolveInFlight(options?: { excludeDeferred?: boolean; excludePrefetch?: boolean }): RequestRecord | null {
     for (let i = this.sortedRecords.length - 1; i >= 0; i--) {
       const r = this.sortedRecords[i]
       if (r.finishedAt != null) continue
       if (options?.excludeDeferred && r.type === 'deferred') continue
+      if (options?.excludePrefetch && r.type === 'prefetch') continue
       return r
     }
     return null

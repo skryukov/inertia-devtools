@@ -1122,7 +1122,94 @@ describe('Correlator', () => {
     })
   })
 
+  describe('explicit-id resolution and id-less fallbacks', () => {
+    it('marks visit as cancelled from finish flags', () => {
+      const visit = makeVisitObject()
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...visit, cancelled: true } }, 120))
+
+      const record = correlator.getRequests()[0]
+      expect(record.cancelled).toBe(true)
+      expect(record.completed).toBe(false)
+    })
+
+    it('attaches id-less progress events to the in-flight record', () => {
+      const visit = makeVisitObject()
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit }, 101))
+      const record = correlator.processEvent(
+        makeEvent('inertia:progress', { progress: { loaded: 10, total: 100, percentage: 10 } }, 110),
+      )
+
+      expect(record).not.toBeNull()
+      expect(record!.inertiaVisitId).toBe(visit.id)
+      expect(correlator.getRequests()).toHaveLength(1)
+    })
+
+    it('does not attach finish with an unknown explicit id to an unrelated in-flight record', () => {
+      const visit = makeVisitObject()
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+
+      const result = correlator.processEvent(
+        makeEvent('inertia:finish', { visit: { id: 'unknown-visit', completed: true } }, 150),
+      )
+
+      expect(result).toBeNull()
+      expect(correlator.getRequests()[0].finishedAt).toBeUndefined()
+    })
+
+    it('does not attach start with an unknown explicit id to an unrelated in-flight record', () => {
+      const visit = makeVisitObject()
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+
+      const result = correlator.processEvent(makeEvent('inertia:start', { visit: { id: 'unknown-visit' } }, 105))
+
+      expect(result).toBeNull()
+      expect(correlator.getRequests()[0].events).toHaveLength(1)
+    })
+
+    it('id-less navigate (history restore) does not attach to an in-flight prefetch', () => {
+      const prefetchVisit = makeVisitObject({ prefetch: true })
+      correlator.processEvent(makeEvent('inertia:before', { visit: prefetchVisit }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit: prefetchVisit }, 101))
+
+      // popstate restore: navigate with no visitId
+      const restoredPage = makePage({ url: '/back' })
+      const record = correlator.processEvent(makeEvent('inertia:navigate', { page: restoredPage }, 150))
+
+      expect(record).not.toBeNull()
+      expect(record!.type).toBe('full')
+      const prefetchRecord = correlator.getRequests().find((r) => r.type === 'prefetch')!
+      expect(prefetchRecord.events.some((e) => e.name === 'inertia:navigate')).toBe(false)
+    })
+  })
+
   describe('client-side visits (inertia:clientVisit)', () => {
+    it('converts the navigate-created record for router.push() instead of duplicating', () => {
+      // Real 3.4 sequence for router.push(): navigate (with the client visit's
+      // id) fires BEFORE clientVisit — both must land on one record.
+      const initialPage = makePage({ props: { count: 1 } })
+      correlator.processEvent(makeEvent('inertia:navigate', { page: initialPage }, 50))
+
+      const newPage = makePage({ url: '/users?tab=active', props: { count: 2 } })
+      correlator.processEvent(makeEvent('inertia:navigate', { page: newPage, visitId: 'client-9' }, 100))
+      const record = correlator.processEvent(
+        makeEvent('inertia:clientVisit', { page: newPage, replace: false, visitId: 'client-9' }, 101),
+      )
+
+      expect(record).not.toBeNull()
+      expect(correlator.getRequests()).toHaveLength(2) // initial + client, no phantom
+      expect(record!.type).toBe('client')
+      expect(record!.method).toBe('PUSH')
+      // diff baseline is the page BEFORE the push, not the pushed page
+      expect(record!.previousPage).toEqual(initialPage)
+      expect(record!.page).toEqual(newPage)
+      expect(record!.events.some((e) => e.name === 'inertia:navigate')).toBe(true)
+      expect(record!.events.some((e) => e.name === 'inertia:clientVisit')).toBe(true)
+    })
+
     it('creates a PUSH client record for router.push()', () => {
       const initialPage = makePage()
       correlator.processEvent(makeEvent('inertia:navigate', { page: initialPage }, 50))

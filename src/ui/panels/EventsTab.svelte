@@ -25,8 +25,8 @@
       'inertia:start',
       'inertia:success',
       'inertia:error',
-      'inertia:invalid',
-      'inertia:exception',
+      'inertia:httpException',
+      'inertia:networkError',
       'inertia:navigate',
       'inertia:finish',
     ])
@@ -42,7 +42,7 @@
         terminal:
           short === 'success'
             ? 'success'
-            : short === 'error' || short === 'invalid' || short === 'exception'
+            : short === 'error' || short === 'httpException' || short === 'networkError'
               ? 'error'
               : undefined,
       })
@@ -128,8 +128,7 @@
   function categorizeEvent(name: string): EventCategory {
     if (name.includes('before') || name.includes('start') || name.includes('finish')) return 'lifecycle'
     if (name.includes('navigate') || name.includes('beforeUpdate')) return 'navigation'
-    if (name.includes('success') || name.includes('error') || name.includes('invalid') || name.includes('exception'))
-      return 'outcome'
+    if (name.includes('success') || name.includes('error') || name.includes('Exception')) return 'outcome'
     return 'other'
   }
 
@@ -191,7 +190,7 @@
   }
 
   function eventColor(name: string): string {
-    if (name.includes('error') || name.includes('invalid') || name.includes('exception')) return 'var(--dt-red)'
+    if (name.includes('error') || name.includes('Exception')) return 'var(--dt-red)'
     if (name.includes('success') || name.includes('finish')) return 'var(--dt-green)'
     if (name.includes('before') || name.includes('start')) return 'var(--dt-blue)'
     if (name.includes('navigate')) return 'var(--dt-accent)'

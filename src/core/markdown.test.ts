@@ -135,3 +135,41 @@ describe('requestToMarkdown', () => {
     expect(md).not.toContain('### Error')
   })
 })
+
+describe('wire data sections', () => {
+  it('includes a Network section with wire headers, status, and size', () => {
+    const md = requestToMarkdown(
+      makeRequest({
+        wire: {
+          request: {
+            method: 'GET',
+            url: '/users',
+            headers: { 'X-Inertia': 'true', accept: 'text/html' },
+            startedAt: 10,
+          },
+          response: {
+            status: 200,
+            headers: { 'x-inertia': 'true' },
+            bodySize: 2048,
+            finishedAt: 55,
+          },
+        },
+      }),
+    )
+
+    expect(md).toContain('### Network')
+    expect(md).toContain('**Status:** 200')
+    expect(md).toContain('**Response size:** 2048 bytes')
+    expect(md).toContain('X-Inertia: true')
+    expect(md).toContain('x-inertia: true')
+  })
+
+  it('omits the Network section without wire data', () => {
+    expect(requestToMarkdown(makeRequest())).not.toContain('### Network')
+  })
+
+  it('notes cache-served visits in the header', () => {
+    const md = requestToMarkdown(makeRequest({ cached: true }))
+    expect(md).toContain('**Served from prefetch cache:** Yes')
+  })
+})

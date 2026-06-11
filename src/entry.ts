@@ -35,20 +35,29 @@ function init(options: DevToolsOptions): void {
   const store = new DevToolsStore(options)
   window.__INERTIA_DEVTOOLS_STORE__ = store
 
-  // Start capturing events immediately (client-side visits arrive
-  // via the inertia:clientVisit event — no history API patching needed)
-  startCapture(store)
+  // Capture must never take the host app down with it
+  try {
+    // Start capturing events immediately (client-side visits arrive
+    // via the inertia:clientVisit event — no history API patching needed)
+    startCapture(store)
 
-  // Capture wire data (headers/status/body size) via Inertia's dev-mode
-  // interceptors; subscribes lazily since createInertiaApp() runs after us
-  startInterceptorCapture(store)
+    // Capture wire data (headers/status/body size) via Inertia's dev-mode
+    // interceptors; subscribes lazily since createInertiaApp() runs after us
+    startInterceptorCapture(store)
 
-  // PerformanceObserver supplies timing/transferSize, and is the only
-  // network source when interceptors are unavailable (dev: false)
-  startNetworkCapture(
-    (url) => store.isInertiaRequestUrl(url),
-    (timing) => store.captureNetworkTiming(timing),
-  )
+    // PerformanceObserver supplies timing/transferSize, and is the only
+    // network source when interceptors are unavailable (dev: false)
+    startNetworkCapture(
+      (url) => store.isInertiaRequestUrl(url),
+      (timing) => store.captureNetworkTiming(timing),
+    )
+  } catch (err) {
+    if (typeof console !== 'undefined') {
+      console.groupCollapsed('[inertia-devtools] Failed to start capture')
+      console.error(err)
+      console.groupEnd()
+    }
+  }
 
   // Mount UI when DOM is ready
   if (document.readyState === 'loading') {

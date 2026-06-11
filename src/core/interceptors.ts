@@ -1,5 +1,6 @@
 import type { DevToolsStore } from './store'
 import type { StopFunction } from './types'
+import { visitUuid, wireBodySize } from './wire'
 
 /**
  * Wire-data capture via Inertia's dev-mode request/response interceptors.
@@ -13,8 +14,8 @@ import type { StopFunction } from './types'
  *
  * Subscription is lazy: `exposeInterceptors()` runs synchronously at the top
  * of `createInertiaApp()`, which is AFTER devtools init on the injected-import
- * path. We attempt at init and retry when the first Inertia event arrives
- * (the initial navigate fires well after app boot, so nothing is missed).
+ * path. We attempt at init and retry on store notifications until the global
+ * appears (the initial navigate fires well after app boot, so nothing is missed).
  *
  * Handlers observe only: they return their input unchanged and swallow their
  * own errors — devtools must never break the host app's requests.
@@ -41,87 +42,93 @@ interface VisitInterceptorsLike {
   onVisitResponse(handler: (visit: VisitLike, response: ResponseLike) => ResponseLike): StopFunction
 }
 
-const utf8Encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null
-
-/** Byte size of a response body string (UTF-8). */
-export function wireBodySize(data: unknown): number | undefined {
-  if (typeof data !== 'string') return undefined
-  return utf8Encoder ? utf8Encoder.encode(data).length : data.length
-}
-
-/** Extract Inertia's visit UUID from a visit-shaped object. */
-export function visitUuid(visit: VisitLike | undefined): string | undefined {
-  const id = visit?.id
-  return typeof id === 'string' ? id : undefined
-}
-
+/**
+ * Hostile-host safe: the global may be a Proxy or accessor that throws.
+ * Any failure reads as "interceptors unavailable".
+ */
 function getInterceptors(): VisitInterceptorsLike | null {
-  if (typeof window === 'undefined') return null
-  const candidate = (window as Window & { __inertia_interceptors__?: unknown }).__inertia_interceptors__
-  if (candidate == null || typeof candidate !== 'object') return null
-  const obj = candidate as VisitInterceptorsLike
-  if (typeof obj.onVisitRequest !== 'function' || typeof obj.onVisitResponse !== 'function') return null
-  return obj
+  try {
+    if (typeof window === 'undefined') return null
+    const candidate = (window as Window & { __inertia_interceptors__?: unknown }).__inertia_interceptors__
+    if (candidate == null || typeof candidate !== 'object') return null
+    const obj = candidate as VisitInterceptorsLike
+    if (typeof obj.onVisitRequest !== 'function' || typeof obj.onVisitResponse !== 'function') return null
+    return obj
+  } catch {
+    return null
+  }
 }
 
 function subscribe(store: DevToolsStore): StopFunction | null {
   const interceptors = getInterceptors()
   if (!interceptors) return null
 
-  const stopRequest = interceptors.onVisitRequest((visit, config) => {
-    try {
-      const uuid = visitUuid(visit)
-      if (uuid) {
-        store.attachWireRequest(uuid, {
-          method: String(config?.method ?? 'get').toUpperCase(),
-          url: String(config?.url ?? ''),
-          // copy: other interceptors may mutate the config object after us
-          headers: { ...config?.headers },
-          startedAt: performance.now(),
-        })
+  let stopRequest: StopFunction | null = null
+  try {
+    stopRequest = interceptors.onVisitRequest((visit, config) => {
+      try {
+        const uuid = visitUuid(visit)
+        if (uuid) {
+          store.attachWireRequest(uuid, {
+            method: String(config?.method ?? 'get').toUpperCase(),
+            url: String(config?.url ?? ''),
+            // copy: other interceptors may mutate the config object after us
+            headers: { ...config?.headers },
+            startedAt: performance.now(),
+          })
+        }
+      } catch {
+        /* observe only */
       }
-    } catch {
-      /* observe only */
-    }
-    return config
-  })
+      return config
+    })
 
-  const stopResponse = interceptors.onVisitResponse((visit, response) => {
-    try {
-      const uuid = visitUuid(visit)
-      if (uuid) {
-        store.attachWireResponse(uuid, {
-          status: typeof response?.status === 'number' ? response.status : undefined,
-          headers: { ...response?.headers },
-          bodySize: wireBodySize(response?.data),
-          finishedAt: performance.now(),
-        })
+    const stopResponse = interceptors.onVisitResponse((visit, response) => {
+      try {
+        const uuid = visitUuid(visit)
+        if (uuid) {
+          store.attachWireResponse(uuid, {
+            status: typeof response?.status === 'number' ? response.status : undefined,
+            headers: { ...response?.headers },
+            bodySize: wireBodySize(response?.data),
+            finishedAt: performance.now(),
+          })
+        }
+      } catch {
+        /* observe only */
       }
-    } catch {
-      /* observe only */
-    }
-    return response
-  })
+      return response
+    })
 
-  return () => {
+    return () => {
+      try {
+        stopRequest?.()
+      } catch {
+        /* observe only */
+      }
+      try {
+        stopResponse()
+      } catch {
+        /* observe only */
+      }
+    }
+  } catch {
+    // registration itself threw (hostile interceptors object) — clean up the half-subscription
     try {
-      stopRequest()
+      stopRequest?.()
     } catch {
       /* observe only */
     }
-    try {
-      stopResponse()
-    } catch {
-      /* observe only */
-    }
+    return null
   }
 }
 
 /**
  * Start capturing wire data. Tries to subscribe immediately; if the global
- * isn't exposed yet, retries when the first Inertia event arrives. If it's
- * still absent then (app sets dev: false), settles into fallback mode —
- * the UI labels network data as PerformanceObserver-only.
+ * isn't exposed yet, retries on store notifications. After a failed retry the
+ * UI labels network data as fallback (PerformanceObserver-only), but retrying
+ * continues — if the global appears later (late app boot), capture upgrades
+ * to interceptors without losing the session.
  *
  * Returns a teardown function.
  */
@@ -136,7 +143,7 @@ export function startInterceptorCapture(store: DevToolsStore): StopFunction {
     if (stop) return
     stop = subscribe(store)
     store.setNetworkCaptureMode(stop ? 'interceptors' : 'fallback')
-    unsubscribe()
+    if (stop) unsubscribe()
   })
 
   return () => {

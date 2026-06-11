@@ -138,18 +138,19 @@ export class DevToolsStore {
     this.notify()
   }
 
-  /** Attach request wire data (from the request interceptor) by Inertia visit UUID. */
+  /**
+   * Attach request wire data (from the request interceptor) by Inertia visit UUID.
+   * No notify: these run synchronously inside the host app's request chain, and
+   * lifecycle events that always follow (finish/success/prefetched/httpException)
+   * notify on their own — the wire data rides that re-render.
+   */
   attachWireRequest(inertiaVisitId: string, request: WireRequestData): void {
-    if (this.correlator.attachWireRequest(inertiaVisitId, request)) {
-      this.notify()
-    }
+    this.correlator.attachWireRequest(inertiaVisitId, request)
   }
 
   /** Attach response wire data (from the response interceptor) by Inertia visit UUID. */
   attachWireResponse(inertiaVisitId: string, response: WireResponseData): void {
-    if (this.correlator.attachWireResponse(inertiaVisitId, response)) {
-      this.notify()
-    }
+    this.correlator.attachWireResponse(inertiaVisitId, response)
   }
 
   // --- Subscription ---

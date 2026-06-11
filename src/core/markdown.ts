@@ -6,6 +6,7 @@
 
 import type { RequestRecord } from './types'
 import { getFeatureInfo } from '../ui/shared/feature-info'
+import { sortedHeaders } from '../ui/shared/network-format'
 
 /** Full snapshot — context header + raw page JSON */
 export function requestToMarkdown(request: RequestRecord): string {
@@ -17,6 +18,11 @@ export function requestToMarkdown(request: RequestRecord): string {
       return `- **${f.type}**${info ? ` — ${info.description}` : ''}`
     })
     sections.push(`### Features\n\n${lines.join('\n')}`)
+  }
+
+  const wire = formatWire(request)
+  if (wire) {
+    sections.push(wire)
   }
 
   if (request.error) {
@@ -69,6 +75,31 @@ function formatHeader(request: RequestRecord): string {
 
   if (request.cancelled) lines.push('**Cancelled:** Yes')
   if (request.interrupted) lines.push('**Interrupted:** Yes')
+  if (request.cached) lines.push('**Served from prefetch cache:** Yes (no request was made)')
 
   return lines.join('\n')
+}
+
+/** Actual wire data (headers/status/size) captured via Inertia's interceptors. */
+function formatWire(request: RequestRecord): string | null {
+  const wire = request.wire
+  if (!wire?.request && !wire?.response) return null
+
+  const lines: string[] = []
+
+  const status = wire.response?.status ?? request.status
+  if (status !== undefined) lines.push(`**Status:** ${status}`)
+  if (wire.response?.bodySize !== undefined) lines.push(`**Response size:** ${wire.response.bodySize} bytes`)
+
+  if (wire.request?.headers && Object.keys(wire.request.headers).length > 0) {
+    const headerLines = sortedHeaders(wire.request.headers).map((h) => `${h.name}: ${h.value}`)
+    lines.push(`**Request headers:**\n\n\`\`\`\n${headerLines.join('\n')}\n\`\`\``)
+  }
+
+  if (wire.response?.headers && Object.keys(wire.response.headers).length > 0) {
+    const headerLines = sortedHeaders(wire.response.headers).map((h) => `${h.name}: ${h.value}`)
+    lines.push(`**Response headers:**\n\n\`\`\`\n${headerLines.join('\n')}\n\`\`\``)
+  }
+
+  return lines.length > 0 ? `### Network\n\n${lines.join('\n\n')}` : null
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { startInterceptorCapture, wireBodySize } from './interceptors'
+import { startInterceptorCapture } from './interceptors'
 import { DevToolsStore } from './store'
 
 type RequestHandler = (visit: unknown, config: unknown) => unknown
@@ -196,16 +196,76 @@ describe('startInterceptorCapture', () => {
     store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: makeVisit('v-1') }))
     expect(store.getState().networkCaptureMode).toBe('fallback')
   })
-})
 
-describe('wireBodySize', () => {
-  it('returns UTF-8 byte length for strings', () => {
-    expect(wireBodySize('abc')).toBe(3)
-    expect(wireBodySize('héllo')).toBe(6)
+  it('survives a hostile global whose property access throws', () => {
+    Object.defineProperty(window, '__inertia_interceptors__', {
+      configurable: true,
+      get() {
+        throw new Error('hostile getter')
+      },
+    })
+
+    expect(() => startInterceptorCapture(store)).not.toThrow()
+    expect(() =>
+      store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: makeVisit('v-1') })),
+    ).not.toThrow()
+    expect(store.getState().networkCaptureMode).toBe('fallback')
   })
 
-  it('returns undefined for non-strings', () => {
-    expect(wireBodySize(undefined)).toBeUndefined()
-    expect(wireBodySize({ a: 1 })).toBeUndefined()
+  it('survives an interceptors object whose registration throws', () => {
+    window.__inertia_interceptors__ = {
+      onVisitRequest() {
+        throw new Error('hostile registration')
+      },
+      onVisitResponse() {
+        throw new Error('hostile registration')
+      },
+    }
+
+    expect(() => startInterceptorCapture(store)).not.toThrow()
+    store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: makeVisit('v-1') }))
+    expect(store.getState().networkCaptureMode).toBe('fallback')
+  })
+
+  it('upgrades from fallback to interceptors when the global appears late', () => {
+    startInterceptorCapture(store)
+
+    // First event with no global → fallback
+    store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: makeVisit('v-1') }))
+    expect(store.getState().networkCaptureMode).toBe('fallback')
+
+    // Global appears later (late app boot) → next event upgrades
+    const fake = makeFakeInterceptors()
+    window.__inertia_interceptors__ = fake
+    store.captureEvent('inertia:start', makeCustomEvent('inertia:start', { visit: makeVisit('v-2') }))
+
+    expect(fake.requestHandlers).toHaveLength(1)
+    expect(store.getState().networkCaptureMode).toBe('interceptors')
+  })
+
+  it('teardown after a lazy subscription unsubscribes the interceptors', () => {
+    const stop = startInterceptorCapture(store)
+
+    const fake = makeFakeInterceptors()
+    window.__inertia_interceptors__ = fake
+    store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: makeVisit('v-1') }))
+    expect(fake.requestHandlers).toHaveLength(1)
+
+    stop()
+    expect(fake.requestHandlers).toHaveLength(0)
+    expect(fake.responseHandlers).toHaveLength(0)
+  })
+
+  it('teardown before any event removes the retry subscriber', () => {
+    const stop = startInterceptorCapture(store)
+    stop()
+
+    // Global appears after teardown; events must not resubscribe
+    const fake = makeFakeInterceptors()
+    window.__inertia_interceptors__ = fake
+    store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: makeVisit('v-1') }))
+
+    expect(fake.requestHandlers).toHaveLength(0)
+    expect(store.getState().networkCaptureMode).toBe('pending')
   })
 })

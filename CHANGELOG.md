@@ -21,10 +21,13 @@ Requires Inertia.js >= 3.4. For Inertia v2 / v3.0–3.3, use the `0.1.x` line.
 
 - Event correlation is now keyed by Inertia's native visit UUID (`visit.id` / `detail.visitId`) instead of URL/method fingerprints — concurrent identical visits, out-of-order completion, and rapid prefetches now correlate exactly ([@skryukov])
 - Client-side visits (`router.push`/`replace`/`replaceProp`/`appendToProp`/`prependToProp`) are captured from the `inertia:clientVisit` event instead of history API monkey-patching ([@skryukov])
+- "Copy as Markdown" now includes a Network section with actual wire headers, status, and response size ([@skryukov])
+- **Breaking:** the exported `DevToolsState` type gained a required `networkCaptureMode` field; the exported `InertiaEventName` union no longer includes `inertia:invalid`, `inertia:exception`, or `inertia:cancel` (use `inertia:httpException` / `inertia:networkError`) ([@skryukov])
 
 ### Removed
 
 - **Breaking:** `startHistoryCapture` export (the history monkey-patch is gone) ([@skryukov])
+- **Breaking:** `DevToolsStore.captureClientVisit` — client-side visits now arrive via the `inertia:clientVisit` event; no manual call is needed ([@skryukov])
 - Support for Inertia v2 / v3.0–3.3 — peer dependency is now `@inertiajs/core >= 3.4.0` ([@skryukov])
 - v2-only event handling (`inertia:invalid`, `inertia:exception`, `inertia:cancel`) ([@skryukov])
 

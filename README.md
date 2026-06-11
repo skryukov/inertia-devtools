@@ -92,7 +92,7 @@ Each badge links to the relevant documentation page.
 
 ### Request Filtering
 
-Toggle visibility by category: visits, mutations, partial, deferred, prefetch, and client-side history changes.
+Toggle visibility by category: visits, mutations, partial, deferred, prefetch, and client-side visits.
 
 ### Copy as Markdown
 
