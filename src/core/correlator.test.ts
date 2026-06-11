@@ -339,12 +339,12 @@ describe('Correlator', () => {
       expect(requests[0].features.some((f) => f.type === 'remember')).toBe(false)
     })
 
-    it('detects cached prefetch (navigation without start/finish)', () => {
+    it('detects cache-served navigation (navigate with cached: true)', () => {
       const visit = makeVisitObject()
 
-      // before fires, then navigate fires immediately (no start/finish = cache hit)
+      // before fires, then navigate fires with cached: true (no start/finish)
       correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
-      correlator.processEvent(makeEvent('inertia:navigate', { page: makePage() }, 102))
+      correlator.processEvent(makeEvent('inertia:navigate', { page: makePage(), cached: true, visitId: visit.id }, 102))
 
       const requests = correlator.getRequests()
       const cached = requests[0].features.find((f) => f.type === 'cached')

@@ -117,9 +117,8 @@ export function extractFeatures(record: RequestRecord, page: InertiaPage): Activ
     features.push({ type: 'prefetch', label: 'PREFETCH' })
   }
 
-  // Request-specific: Cached prefetch (navigation that used prefetched data — no XHR start/finish)
-  const hasStart = record.events.some((e) => e.name === 'inertia:start')
-  if (!hasStart && record.startedAt > 0 && record.type !== 'client') {
+  // Request-specific: served from the prefetch cache (navigate fired with cached: true)
+  if (record.cached) {
     features.push({ type: 'cached', label: 'CACHED' })
   }
 
