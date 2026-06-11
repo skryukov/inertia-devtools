@@ -1122,6 +1122,65 @@ describe('Correlator', () => {
     })
   })
 
+  describe('client-side visits (inertia:clientVisit)', () => {
+    it('creates a PUSH client record for router.push()', () => {
+      const initialPage = makePage()
+      correlator.processEvent(makeEvent('inertia:navigate', { page: initialPage }, 50))
+
+      const newPage = makePage({ url: '/users?tab=active', props: { users: [], tab: 'active' } })
+      const record = correlator.processEvent(
+        makeEvent('inertia:clientVisit', { page: newPage, replace: false, visitId: 'client-1' }, 100),
+      )
+
+      expect(record).not.toBeNull()
+      expect(record!.type).toBe('client')
+      expect(record!.method).toBe('PUSH')
+      expect(record!.url).toBe('/users?tab=active')
+      expect(record!.inertiaVisitId).toBe('client-1')
+      expect(record!.completed).toBe(true)
+      expect(record!.duration).toBe(0)
+      expect(correlator.getCurrentPage()).toEqual(newPage)
+    })
+
+    it('creates a REPLACE client record for router.replace()/replaceProp()', () => {
+      const initialPage = makePage({ props: { count: 1 } })
+      correlator.processEvent(makeEvent('inertia:navigate', { page: initialPage }, 50))
+
+      // replaceProp routes through router.replace → clientVisit with replace: true
+      const updatedPage = makePage({ props: { count: 2 } })
+      const record = correlator.processEvent(
+        makeEvent('inertia:clientVisit', { page: updatedPage, replace: true, visitId: 'client-2' }, 100),
+      )
+
+      expect(record!.method).toBe('REPLACE')
+      // previousPage enables the props diff view
+      expect(record!.previousPage).toEqual(initialPage)
+      expect(record!.page).toEqual(updatedPage)
+    })
+
+    it('ignores clientVisit without a page payload', () => {
+      const record = correlator.processEvent(
+        makeEvent('inertia:clientVisit', { replace: false, visitId: 'client-3' }, 100),
+      )
+      expect(record).toBeNull()
+      expect(correlator.getRequests()).toHaveLength(0)
+    })
+
+    it('router.flash() updates the current record via flash event, not a client record', () => {
+      const visit = makeVisitObject()
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...visit, completed: true } }, 140))
+
+      // router.flash() fires only inertia:flash — no clientVisit event
+      correlator.processEvent(makeEvent('inertia:flash', { flash: { notice: 'Hi' } }, 200))
+
+      const requests = correlator.getRequests()
+      expect(requests).toHaveLength(1)
+      expect(requests[0].type).not.toBe('client')
+      expect(requests[0].events.some((e) => e.name === 'inertia:flash')).toBe(true)
+    })
+  })
+
   describe('network timing correlation', () => {
     it('matches timing to visit by URL and timing', () => {
       const visit = makeVisitObject()

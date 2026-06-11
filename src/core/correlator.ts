@@ -68,6 +68,9 @@ export class Correlator {
       case 'inertia:beforeUpdate':
         return this.handleBeforeUpdate(event, detail)
 
+      case 'inertia:clientVisit':
+        return this.handleClientVisit(event, detail)
+
       default:
         return this.handleGenericEvent(event, detail)
     }
@@ -95,45 +98,6 @@ export class Correlator {
       if (normalizeUrl(this.sortedRecords[i].url) === path) return true
     }
     return false
-  }
-
-  /**
-   * Process a client-side visit (router.push/replace/replaceProp/...).
-   * Creates a new RequestRecord of type 'client' with the page diff.
-   */
-  processClientVisit(
-    method: 'push' | 'replace',
-    page: InertiaPage,
-    previousPage: InertiaPage | undefined,
-    inertiaVisitId?: string,
-  ): RequestRecord {
-    const visitId = this.nextVisitId++
-    const now = performance.now()
-
-    const record: RequestRecord = {
-      visitId,
-      inertiaVisitId,
-      type: 'client',
-      method: method === 'push' ? 'PUSH' : 'REPLACE',
-      url: page.url ?? '/',
-      startedAt: now,
-      finishedAt: now,
-      duration: 0,
-      events: [],
-      features: this.extractPageFeatures(page),
-      diagnostics: [],
-      cancelled: false,
-      interrupted: false,
-      completed: true,
-      page,
-      previousPage,
-    }
-
-    this.insertRecord(record)
-    if (inertiaVisitId) this.uuidMap.set(inertiaVisitId, visitId)
-    this.lastPage = page
-
-    return record
   }
 
   clear(): void {
@@ -442,6 +406,44 @@ export class Correlator {
       record.page = page
       record.features = extractFeatures(record, page)
     }
+
+    return record
+  }
+
+  /**
+   * Client-side visit (router.push/replace/replaceProp/appendToProp/prependToProp).
+   * Fires inertia:clientVisit with { page, replace, visitId } — no HTTP request,
+   * no other lifecycle events. Creates a completed 'client' record with the page diff.
+   */
+  private handleClientVisit(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
+    const page = detail.page as InertiaPage | undefined
+    if (!page) return null
+
+    const inertiaVisitId = typeof detail.visitId === 'string' ? detail.visitId : undefined
+    const visitId = this.nextVisitId++
+
+    const record: RequestRecord = {
+      visitId,
+      inertiaVisitId,
+      type: 'client',
+      method: detail.replace === true ? 'REPLACE' : 'PUSH',
+      url: page.url ?? '/',
+      startedAt: event.timestamp,
+      finishedAt: event.timestamp,
+      duration: 0,
+      events: [event],
+      features: this.extractPageFeatures(page),
+      diagnostics: [],
+      cancelled: false,
+      interrupted: false,
+      completed: true,
+      page,
+      previousPage: this.lastPage ?? undefined,
+    }
+
+    this.insertRecord(record)
+    if (inertiaVisitId) this.uuidMap.set(inertiaVisitId, visitId)
+    this.lastPage = page
 
     return record
   }

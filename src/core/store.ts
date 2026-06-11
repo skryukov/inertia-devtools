@@ -119,16 +119,6 @@ export class DevToolsStore {
     this.notify()
   }
 
-  /**
-   * Capture a client-side visit (detected via history API monkey-patch).
-   * These are router.push/replace/replaceProp/appendToProp/prependToProp calls
-   * that change page state without making an HTTP request.
-   */
-  captureClientVisit(method: 'push' | 'replace', page: InertiaPage, previousPage: InertiaPage): void {
-    this.correlator.processClientVisit(method, page, previousPage)
-    this.notify()
-  }
-
   // --- Subscription ---
 
   subscribe(fn: Subscriber): () => void {

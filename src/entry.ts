@@ -1,6 +1,5 @@
 import { DevToolsStore } from './core/store'
 import { startCapture } from './core/capture'
-import { startHistoryCapture } from './core/history-capture'
 import { startNetworkCapture } from './core/network'
 import type { DevToolsOptions } from './core/types'
 
@@ -35,11 +34,9 @@ function init(options: DevToolsOptions): void {
   const store = new DevToolsStore(options)
   window.__INERTIA_DEVTOOLS_STORE__ = store
 
-  // Start capturing events immediately
+  // Start capturing events immediately (client-side visits arrive
+  // via the inertia:clientVisit event — no history API patching needed)
   startCapture(store)
-
-  // Start capturing client-side visits (history API monkey-patch)
-  startHistoryCapture(store)
 
   // Start capturing network timing via PerformanceObserver
   startNetworkCapture(
