@@ -1,4 +1,5 @@
 import type { NetworkCaptureMode, RequestRecord } from '../../core/types'
+import { formatBytes } from './format'
 
 /**
  * Presentation helpers for the Network tab.
@@ -10,15 +11,15 @@ export interface HeaderEntry {
   value: string
 }
 
-const isInertia = (name: string) => name.toLowerCase().startsWith('x-inertia')
+export const isInertiaHeader = (name: string) => name.toLowerCase().startsWith('x-inertia')
 
 /** Sort headers for display: X-Inertia-* first, then alphabetical. */
 export function sortedHeaders(headers: Record<string, string> | undefined): HeaderEntry[] {
   if (!headers) return []
   const entries = Object.entries(headers).map(([name, value]) => ({ name, value }))
   return entries.toSorted((a, b) => {
-    const ai = isInertia(a.name)
-    const bi = isInertia(b.name)
+    const ai = isInertiaHeader(a.name)
+    const bi = isInertiaHeader(b.name)
     if (ai !== bi) return ai ? -1 : 1
     return a.name.localeCompare(b.name)
   })
@@ -32,10 +33,9 @@ export function statusKind(status: number): StatusKind {
   return 'error'
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes === 0) return 'cached'
-  if (bytes < 1024) return `${bytes} B`
-  return `${(bytes / 1024).toFixed(1)} KB`
+/** Byte count for display; 0 transferred bytes means the browser served from cache. */
+export function formatTransferSize(bytes: number): string {
+  return bytes === 0 ? 'cached' : formatBytes(bytes)
 }
 
 /** Duration in ms — wire timestamps when available, PerformanceObserver timing otherwise. */
@@ -58,9 +58,9 @@ export function timingLine(record: RequestRecord): string | null {
   // transferSize is actual wire bytes (post-compression); bodySize is the
   // decoded response body length from the interceptor.
   if (record.network?.transferSize !== undefined) {
-    parts.push(formatBytes(record.network.transferSize))
+    parts.push(formatTransferSize(record.network.transferSize))
   } else if (record.wire?.response?.bodySize !== undefined) {
-    parts.push(formatBytes(record.wire.response.bodySize))
+    parts.push(formatTransferSize(record.wire.response.bodySize))
   }
 
   return parts.length > 0 ? parts.join(' · ') : null

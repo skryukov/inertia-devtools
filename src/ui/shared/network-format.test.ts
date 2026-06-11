@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   sortedHeaders,
   statusKind,
-  formatBytes,
+  formatTransferSize,
   networkDuration,
   timingLine,
   captureModeNotice,
@@ -59,14 +59,14 @@ describe('statusKind', () => {
   })
 })
 
-describe('formatBytes', () => {
+describe('formatTransferSize', () => {
   it('labels zero bytes as cached', () => {
-    expect(formatBytes(0)).toBe('cached')
+    expect(formatTransferSize(0)).toBe('cached')
   })
 
   it('formats bytes and kilobytes', () => {
-    expect(formatBytes(512)).toBe('512 B')
-    expect(formatBytes(2048)).toBe('2.0 KB')
+    expect(formatTransferSize(512)).toBe('512 B')
+    expect(formatTransferSize(2048)).toBe('2.0 KB')
   })
 })
 

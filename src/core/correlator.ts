@@ -9,7 +9,7 @@ import type {
   WireResponseData,
 } from './types'
 import type { NetworkTiming } from './network'
-import { wireBodySize } from './interceptors'
+import { visitUuid, wireBodySize } from './interceptors'
 import { extractFeatures, extractPageFeatures } from './features'
 import { computeDiagnostics } from './diagnostics'
 import { normalizeUrl } from './url'
@@ -137,7 +137,7 @@ export class Correlator {
     const record = this.resolveByUuid(uuid)
     if (!record) return null
     record.wire = { ...record.wire, response }
-    if (record.status === undefined && response.status > 0) {
+    if (record.status === undefined && response.status !== undefined) {
       record.status = response.status
     }
     return record
@@ -204,7 +204,7 @@ export class Correlator {
 
   private handleBefore(event: CapturedEvent, detail: Record<string, unknown>, timestamp: number): RequestRecord | null {
     const visit = this.extractVisit(detail)
-    const uuid = this.visitUuid(visit)
+    const uuid = visitUuid(visit)
 
     // Prefetch visits: inertia:before fires even when the cache is still fresh
     // (no request follows). Defer record creation until inertia:start confirms
@@ -263,7 +263,7 @@ export class Correlator {
 
   private handleStart(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
     const visit = this.extractVisit(detail)
-    const uuid = this.visitUuid(visit)
+    const uuid = visitUuid(visit)
 
     // Pending prefetch confirmed: a real request went out (cache hits never get start).
     if (uuid && visit) {
@@ -283,7 +283,7 @@ export class Correlator {
 
   private handleFinish(event: CapturedEvent, detail: Record<string, unknown>, timestamp: number): RequestRecord | null {
     const visit = this.extractVisit(detail)
-    const record = this.resolveByUuid(this.visitUuid(visit)) ?? this.resolveInFlight()
+    const record = this.resolveByUuid(visitUuid(visit)) ?? this.resolveInFlight()
     if (!record) return null
 
     record.events.push(event)
@@ -531,7 +531,7 @@ export class Correlator {
   private resolveEventRecord(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
     // success/error carry a top-level visitId; prefetching/prefetched carry the visit object.
     const visit = this.extractVisit(detail)
-    const uuid = this.visitUuid(visit) ?? (typeof detail.visitId === 'string' ? detail.visitId : undefined)
+    const uuid = visitUuid(visit) ?? (typeof detail.visitId === 'string' ? detail.visitId : undefined)
 
     // An explicit id resolves exactly or not at all — attaching an id-carrying
     // event to an unrelated record (e.g. after eviction) would be misattribution.
@@ -660,7 +660,7 @@ export class Correlator {
   /** Build WireResponseData from an event payload's { status, data, headers }. */
   private wireResponseFromPayload(response: Record<string, unknown>, timestamp: number): WireResponseData {
     return {
-      status: typeof response.status === 'number' ? response.status : 0,
+      status: typeof response.status === 'number' ? response.status : undefined,
       headers: { ...(response.headers as Record<string, string> | undefined) },
       bodySize: wireBodySize(response.data),
       finishedAt: timestamp,
@@ -673,11 +673,6 @@ export class Correlator {
     const visit = detail.visit
     if (visit == null || typeof visit !== 'object') return undefined
     return visit as InertiaVisitDetail
-  }
-
-  private visitUuid(visit: InertiaVisitDetail | undefined): string | undefined {
-    const id = visit?.id
-    return typeof id === 'string' ? id : undefined
   }
 
   /**

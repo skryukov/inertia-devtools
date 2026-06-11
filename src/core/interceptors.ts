@@ -15,6 +15,9 @@ import type { StopFunction } from './types'
  * of `createInertiaApp()`, which is AFTER devtools init on the injected-import
  * path. We attempt at init and retry when the first Inertia event arrives
  * (the initial navigate fires well after app boot, so nothing is missed).
+ *
+ * Handlers observe only: they return their input unchanged and swallow their
+ * own errors — devtools must never break the host app's requests.
  */
 
 interface VisitLike {
@@ -38,14 +41,18 @@ interface VisitInterceptorsLike {
   onVisitResponse(handler: (visit: VisitLike, response: ResponseLike) => ResponseLike): StopFunction
 }
 
+const utf8Encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null
+
 /** Byte size of a response body string (UTF-8). */
 export function wireBodySize(data: unknown): number | undefined {
   if (typeof data !== 'string') return undefined
-  try {
-    return new TextEncoder().encode(data).length
-  } catch {
-    return data.length
-  }
+  return utf8Encoder ? utf8Encoder.encode(data).length : data.length
+}
+
+/** Extract Inertia's visit UUID from a visit-shaped object. */
+export function visitUuid(visit: VisitLike | undefined): string | undefined {
+  const id = visit?.id
+  return typeof id === 'string' ? id : undefined
 }
 
 function getInterceptors(): VisitInterceptorsLike | null {
@@ -57,15 +64,6 @@ function getInterceptors(): VisitInterceptorsLike | null {
   return obj
 }
 
-function visitUuid(visit: VisitLike | undefined): string | undefined {
-  const id = visit?.id
-  return typeof id === 'string' ? id : undefined
-}
-
-/**
- * Subscribe pure-observation handlers. Handlers always return their input
- * unchanged and never throw — devtools must never break the host app's requests.
- */
 function subscribe(store: DevToolsStore): StopFunction | null {
   const interceptors = getInterceptors()
   if (!interceptors) return null
@@ -77,12 +75,13 @@ function subscribe(store: DevToolsStore): StopFunction | null {
         store.attachWireRequest(uuid, {
           method: String(config?.method ?? 'get').toUpperCase(),
           url: String(config?.url ?? ''),
+          // copy: other interceptors may mutate the config object after us
           headers: { ...config?.headers },
           startedAt: performance.now(),
         })
       }
     } catch {
-      // never break the host app
+      /* observe only */
     }
     return config
   })
@@ -92,14 +91,14 @@ function subscribe(store: DevToolsStore): StopFunction | null {
       const uuid = visitUuid(visit)
       if (uuid) {
         store.attachWireResponse(uuid, {
-          status: typeof response?.status === 'number' ? response.status : 0,
+          status: typeof response?.status === 'number' ? response.status : undefined,
           headers: { ...response?.headers },
           bodySize: wireBodySize(response?.data),
           finishedAt: performance.now(),
         })
       }
     } catch {
-      // never break the host app
+      /* observe only */
     }
     return response
   })
@@ -108,12 +107,12 @@ function subscribe(store: DevToolsStore): StopFunction | null {
     try {
       stopRequest()
     } catch {
-      /* noop */
+      /* observe only */
     }
     try {
       stopResponse()
     } catch {
-      /* noop */
+      /* observe only */
     }
   }
 }

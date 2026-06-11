@@ -80,6 +80,7 @@ export interface WireRequestData {
   method: string
   url: string
   headers: Record<string, string>
+  /** When the request interceptor fired (just before send) — later than the record's before-event startedAt. */
   startedAt: number
 }
 
@@ -89,7 +90,7 @@ export interface WireRequestData {
  * and are extracted from the inertia:prefetched / inertia:httpException events.
  */
 export interface WireResponseData {
-  status: number
+  status?: number
   headers: Record<string, string>
   bodySize?: number
   finishedAt: number

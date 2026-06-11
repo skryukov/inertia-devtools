@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { RequestRecord, DocsProvider, NetworkCaptureMode } from '../../core/types'
-  import { sortedHeaders, statusKind, timingLine, captureModeNotice } from '../shared/network-format'
+  import type { HeaderEntry } from '../shared/network-format'
+  import { sortedHeaders, statusKind, timingLine, captureModeNotice, isInertiaHeader } from '../shared/network-format'
 
   let {
     request,
@@ -60,33 +61,24 @@
   {/if}
 
   <!-- Actual wire headers -->
-  {#if requestHeaders.length > 0}
-    <div class="headers-box">
-      <div class="headers-title">Request Headers</div>
-      <div class="headers-rows">
-        {#each requestHeaders as header (header.name)}
-          <div class="header-row" class:inertia-header={header.name.toLowerCase().startsWith('x-inertia')}>
-            <span class="header-name">{header.name}:</span>
-            <span class="header-value">{header.value}</span>
-          </div>
-        {/each}
+  {#snippet headersBox(title: string, headers: HeaderEntry[])}
+    {#if headers.length > 0}
+      <div class="headers-box">
+        <div class="headers-title">{title}</div>
+        <div class="headers-rows">
+          {#each headers as header (header.name)}
+            <div class="header-row" class:inertia-header={isInertiaHeader(header.name)}>
+              <span class="header-name">{header.name}:</span>
+              <span class="header-value">{header.value}</span>
+            </div>
+          {/each}
+        </div>
       </div>
-    </div>
-  {/if}
+    {/if}
+  {/snippet}
 
-  {#if responseHeaders.length > 0}
-    <div class="headers-box">
-      <div class="headers-title">Response Headers</div>
-      <div class="headers-rows">
-        {#each responseHeaders as header (header.name)}
-          <div class="header-row" class:inertia-header={header.name.toLowerCase().startsWith('x-inertia')}>
-            <span class="header-name">{header.name}:</span>
-            <span class="header-value">{header.value}</span>
-          </div>
-        {/each}
-      </div>
-    </div>
-  {/if}
+  {@render headersBox('Request Headers', requestHeaders)}
+  {@render headersBox('Response Headers', responseHeaders)}
 
   <!-- Inferred protocol details (fallback when interceptors are unavailable) -->
   {#if showInferredProtocol}

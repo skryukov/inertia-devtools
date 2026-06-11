@@ -121,10 +121,13 @@ export class DevToolsStore {
 
   /**
    * Capture a network timing entry (from PerformanceObserver) and correlate it.
+   * Unmatched entries are buffered inside the correlator and drained on finish,
+   * which notifies on its own — no need to re-render for a buffered miss.
    */
   captureNetworkTiming(timing: NetworkTiming): void {
-    this.correlator.linkNetworkTiming(timing)
-    this.notify()
+    if (this.correlator.linkNetworkTiming(timing)) {
+      this.notify()
+    }
   }
 
   // --- Wire data (interceptors) ---
