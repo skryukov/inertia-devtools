@@ -66,6 +66,7 @@ describe('DevToolsStore', () => {
   describe('prefetch via DOM events', () => {
     it('creates prefetch record only after start confirms real request', () => {
       const visit = {
+        id: 'visit-prefetch-1',
         method: 'get',
         url: new URL('http://localhost/prefetched'),
         only: [],

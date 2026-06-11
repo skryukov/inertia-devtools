@@ -6,35 +6,36 @@ import { computeDiagnostics } from './diagnostics'
 import { normalizeUrl } from './url'
 
 const MAX_PENDING_NETWORK = 10
+const MAX_PENDING_PREFETCH = 20
 const NETWORK_TIMING_TOLERANCE_MS = 2000
 
 /**
  * Correlates individual Inertia events into logical RequestRecords.
  *
- * Strategy:
- * - `before`/`start`/`finish` carry event.detail.visit with matching properties
- *   → use visit fingerprint (url + method + only + deferredProps) for correlation
- * - Other events (navigate, success, etc.) → correlate via "active visit ID"
- * - Prefetch visits: `inertia:before` fires even for cache hits (no real request).
- *   We defer record creation until `inertia:start` to avoid phantom records.
- *
- * Note: Inertia creates NEW visit objects for each event dispatch (before/start/finish
- * have different object references), so identity-based WeakMap correlation won't work.
+ * Correlation strategy (requires Inertia >= 3.4):
+ * - Every visit carries a UUID (`visit.id`). Events carrying the visit object
+ *   (`before`/`start`/`finish`/`prefetching`/`prefetched`) and events carrying a
+ *   top-level `visitId` (`navigate`/`success`/`error`/`clientVisit`) resolve to
+ *   records by exact id match.
+ * - Events with no id at all (`progress`, `beforeUpdate`, `flash`,
+ *   `httpException`, `networkError`) fall back to the most recently started
+ *   in-flight record. `flash` additionally falls back to the most recent record
+ *   overall, because `router.flash()` fires with no visit in flight.
+ * - Prefetch visits: `inertia:before` fires even when the prefetch cache is
+ *   still fresh (no request follows). Record creation is deferred until
+ *   `inertia:start` confirms a real request went out.
+ * - Cache-served clicks (`navigate` with `cached: true`) never receive
+ *   `start`/`finish` — they are finalized when `navigate` arrives.
  */
 export class Correlator {
   private nextVisitId = 1
   private records: Map<number, RequestRecord> = new Map()
   private sortedRecords: RequestRecord[] = []
   private maxRecords: number
-  /**
-   * Maps visit fingerprint → queue of visit IDs.
-   * A queue handles concurrent requests with the same fingerprint (rare but possible).
-   * FIFO: before pushes to back, finish shifts from front.
-   */
-  private fingerprintMap: Map<string, number[]> = new Map()
-  /** Most recent prefetch before-event awaiting confirmation (inertia:start). Cache hits never get start. */
-  private pendingPrefetch: { event: CapturedEvent; timestamp: number; url: string; fingerprint: string } | null = null
-  private activeVisitId: number | null = null
+  /** Inertia visit UUID → devtools record id. */
+  private uuidMap: Map<string, number> = new Map()
+  /** Prefetch before-events awaiting confirmation (inertia:start), keyed by visit UUID. */
+  private pendingPrefetch: Map<string, { event: CapturedEvent; timestamp: number }> = new Map()
   private lastPage: InertiaPage | null = null
   /** Buffer of unmatched network timing entries for late correlation. */
   private pendingNetwork: NetworkTiming[] = []
@@ -97,15 +98,21 @@ export class Correlator {
   }
 
   /**
-   * Process a client-side visit detected by history API interception.
+   * Process a client-side visit (router.push/replace/replaceProp/...).
    * Creates a new RequestRecord of type 'client' with the page diff.
    */
-  processClientVisit(method: 'push' | 'replace', page: InertiaPage, previousPage: InertiaPage): RequestRecord {
+  processClientVisit(
+    method: 'push' | 'replace',
+    page: InertiaPage,
+    previousPage: InertiaPage | undefined,
+    inertiaVisitId?: string,
+  ): RequestRecord {
     const visitId = this.nextVisitId++
     const now = performance.now()
 
     const record: RequestRecord = {
       visitId,
+      inertiaVisitId,
       type: 'client',
       method: method === 'push' ? 'PUSH' : 'REPLACE',
       url: page.url ?? '/',
@@ -123,8 +130,8 @@ export class Correlator {
     }
 
     this.insertRecord(record)
+    if (inertiaVisitId) this.uuidMap.set(inertiaVisitId, visitId)
     this.lastPage = page
-    this.activeVisitId = visitId
 
     return record
   }
@@ -132,11 +139,10 @@ export class Correlator {
   clear(): void {
     this.records.clear()
     this.sortedRecords = []
-    this.fingerprintMap.clear()
-    this.pendingPrefetch = null
+    this.uuidMap.clear()
+    this.pendingPrefetch.clear()
     this.pendingNetwork = []
     this._evictedCount = 0
-    this.activeVisitId = null
     this.nextVisitId = 1
     // Note: lastPage is NOT cleared -- it represents the current app state
   }
@@ -202,12 +208,17 @@ export class Correlator {
 
   private handleBefore(event: CapturedEvent, detail: Record<string, unknown>, timestamp: number): RequestRecord | null {
     const visit = this.extractVisit(detail)
-    const fingerprint = this.visitFingerprint(visit)
+    const uuid = this.visitUuid(visit)
 
-    // Prefetch visits: inertia:before fires even for cache hits (no real request).
-    // Defer record creation until inertia:start confirms a real request was made.
-    if (visit && visit.prefetch) {
-      this.pendingPrefetch = { event, timestamp, url: this.extractUrl(visit), fingerprint }
+    // Prefetch visits: inertia:before fires even when the cache is still fresh
+    // (no request follows). Defer record creation until inertia:start confirms
+    // a real request. Keyed by UUID so concurrent prefetches don't clobber each other.
+    if (visit?.prefetch && uuid) {
+      this.pendingPrefetch.set(uuid, { event, timestamp })
+      if (this.pendingPrefetch.size > MAX_PENDING_PREFETCH) {
+        const oldest = this.pendingPrefetch.keys().next().value
+        if (oldest !== undefined) this.pendingPrefetch.delete(oldest)
+      }
       return null
     }
 
@@ -230,6 +241,7 @@ export class Correlator {
 
     const record: RequestRecord = {
       visitId,
+      inertiaVisitId: uuid,
       parentVisitId,
       type: isDeferred ? 'deferred' : this.classifyVisitType(visit),
       method,
@@ -248,35 +260,25 @@ export class Correlator {
     }
 
     this.insertRecord(record)
+    if (uuid) this.uuidMap.set(uuid, visitId)
 
-    // Store fingerprint → visitId for correlation with start/finish events
-    this.pushFingerprint(fingerprint, visitId)
-
-    // Deferred requests are background reloads — they must NOT steal
-    // activeVisitId from the parent visit, which still needs to receive
-    // navigate/beforeUpdate events that fire after deferred starts.
-    // On initial page load, deferred before-events fire BEFORE navigate,
-    // so activeVisitId must stay null to let navigate create the initial record.
-    if (!isDeferred) {
-      this.activeVisitId = visitId
-    }
     return record
   }
 
   private handleStart(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
-    // Check if this is a pending prefetch visit (deferred from handleBefore).
-    // before → start fire in rapid succession for the same visit.
     const visit = this.extractVisit(detail)
-    if (this.pendingPrefetch && visit) {
-      const fingerprint = this.visitFingerprint(visit)
-      if (fingerprint === this.pendingPrefetch.fingerprint) {
-        const pending = this.pendingPrefetch
-        this.pendingPrefetch = null
-        return this.createPrefetchRecord(visit, pending.event, event, pending.timestamp)
+    const uuid = this.visitUuid(visit)
+
+    // Pending prefetch confirmed: a real request went out (cache hits never get start).
+    if (uuid && visit) {
+      const pending = this.pendingPrefetch.get(uuid)
+      if (pending) {
+        this.pendingPrefetch.delete(uuid)
+        return this.createPrefetchRecord(visit, uuid, pending.event, event, pending.timestamp)
       }
     }
 
-    const record = this.resolveByFingerprint(event) ?? this.resolveByActiveId()
+    const record = this.resolveByUuid(uuid) ?? this.resolveInFlight()
     if (record) {
       record.events.push(event)
     }
@@ -284,14 +286,14 @@ export class Correlator {
   }
 
   private handleFinish(event: CapturedEvent, detail: Record<string, unknown>, timestamp: number): RequestRecord | null {
-    const record = this.resolveByFingerprint(event) ?? this.resolveByActiveId()
+    const visit = this.extractVisit(detail)
+    const record = this.resolveByUuid(this.visitUuid(visit)) ?? this.resolveInFlight()
     if (!record) return null
 
     record.events.push(event)
     record.finishedAt = timestamp
     record.duration = timestamp - record.startedAt
 
-    const visit = this.extractVisit(detail)
     if (visit) {
       record.completed = !!visit.completed
       record.cancelled = !!visit.cancelled
@@ -303,9 +305,8 @@ export class Correlator {
       this.drainPendingNetwork(record)
     }
 
-    // Deferred requests don't receive navigate/beforeUpdate events (those go to
-    // the parent visit). By finish time, lastPage has been updated with the merged
-    // props, so we capture it here for the props diff view.
+    // Deferred requests may not have page data yet (navigate carries the merged
+    // page, but by finish time lastPage holds the merged props either way).
     if (record.type === 'deferred') {
       if (!record.page && this.lastPage) {
         record.page = this.lastPage
@@ -327,19 +328,25 @@ export class Correlator {
 
   private handleNavigate(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
     const page = detail.page as InertiaPage | undefined
+    const visitId = typeof detail.visitId === 'string' ? detail.visitId : undefined
 
     // Update global page state
     if (page) {
       this.lastPage = page
     }
 
-    let record = this.resolveByActiveId()
+    // Exact match by visit UUID; for id-less navigates (defensive), fall back to
+    // the most recent in-flight non-deferred record. Deferred reloads are excluded
+    // because their navigates always carry the deferred visit's own id in 3.4 —
+    // an id-less navigate racing an in-flight deferred reload belongs elsewhere.
+    let record = this.resolveByUuid(visitId) ?? (visitId ? null : this.resolveInFlight({ excludeDeferred: true }))
 
-    // Initial page load: navigate fires with no preceding before/start
+    // Initial page load: navigate fires with an id no before-event introduced
     if (!record && page) {
-      const visitId = this.nextVisitId++
+      const recordId = this.nextVisitId++
       record = {
-        visitId,
+        visitId: recordId,
+        inertiaVisitId: visitId,
         type: 'full',
         method: 'GET',
         url: page.url ?? '/',
@@ -355,14 +362,14 @@ export class Correlator {
         page,
       }
       this.insertRecord(record)
-      this.activeVisitId = visitId
+      if (visitId) this.uuidMap.set(visitId, recordId)
 
       // On initial page load, deferred before-events may have fired before
       // this navigate event. Link orphaned deferred records to this parent
       // and set their previousPage to the initial page state.
       for (const r of this.records.values()) {
         if (r.type === 'deferred' && r.parentVisitId === undefined) {
-          r.parentVisitId = visitId
+          r.parentVisitId = recordId
           r.previousPage = page
         }
       }
@@ -372,13 +379,19 @@ export class Correlator {
 
     record.events.push(event)
 
+    // navigate fires with cached: true when the page was served from the
+    // prefetch cache — such visits never receive start/finish.
+    if (detail.cached === true) {
+      record.cached = true
+    }
+
     if (page) {
       record.page = page
       record.features = extractFeatures(record, page)
     }
 
-    // Navigate means the page transition is complete. For prefetch cache hits,
-    // inertia:start/finish never fire (no XHR), so finalize the record here.
+    // Navigate means the page transition is complete. For cache-served visits,
+    // inertia:start/finish never fire (no request), so finalize the record here.
     if (!record.finishedAt) {
       record.finishedAt = event.timestamp
       record.duration = event.timestamp - record.startedAt
@@ -391,17 +404,14 @@ export class Correlator {
   }
 
   /**
-   * beforeUpdate fires before navigate and carries the page object.
+   * beforeUpdate fires before navigate and carries the page object (no visit id).
    * For POST→redirect flows, navigate never fires (replace=true),
    * so beforeUpdate is the only source of page data.
    */
   private handleBeforeUpdate(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
-    const record = this.resolveByActiveId()
-    if (!record) return null
-
-    record.events.push(event)
-
     const page = detail.page as InertiaPage | undefined
+
+    // Page-state bookkeeping runs regardless of which record the event attaches to.
     if (page) {
       // Snapshot current lastPage as previousPage for all pending deferred records
       // BEFORE updating lastPage. This ensures each deferred record's previousPage
@@ -415,21 +425,29 @@ export class Correlator {
       }
 
       this.lastPage = page
+    }
 
-      // Only set page on the record if navigate hasn't already set it.
-      // For normal visits, navigate fires after beforeUpdate and takes precedence.
-      // For POST→redirect, navigate never fires — beforeUpdate is the only source.
-      if (!record.page) {
-        record.page = page
-        record.features = extractFeatures(record, page)
-      }
+    // beforeUpdate carries no visit id. Attach to the in-flight non-deferred
+    // record — deferred records receive their page via their own id-carrying
+    // navigate (or at finish), so setting it here would be premature.
+    const record = this.resolveInFlight({ excludeDeferred: true })
+    if (!record) return null
+
+    record.events.push(event)
+
+    // Only set page on the record if navigate hasn't already set it.
+    // For normal visits, navigate fires after beforeUpdate and takes precedence.
+    // For POST→redirect, navigate never fires — beforeUpdate is the only source.
+    if (page && !record.page) {
+      record.page = page
+      record.features = extractFeatures(record, page)
     }
 
     return record
   }
 
   private handleGenericEvent(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
-    const record = this.resolveByFingerprint(event) ?? this.resolveByActiveId()
+    const record = this.resolveEventRecord(event, detail)
     if (!record) return null
 
     record.events.push(event)
@@ -461,12 +479,32 @@ export class Correlator {
     return record
   }
 
+  /** Resolve the record an event belongs to, by id when available, by fallback otherwise. */
+  private resolveEventRecord(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
+    // success/error carry a top-level visitId; prefetching/prefetched carry the visit object.
+    const visit = this.extractVisit(detail)
+    const uuid = this.visitUuid(visit) ?? (typeof detail.visitId === 'string' ? detail.visitId : undefined)
+
+    // An explicit id resolves exactly or not at all — attaching an id-carrying
+    // event to an unrelated record (e.g. after eviction) would be misattribution.
+    if (uuid) return this.resolveByUuid(uuid)
+
+    // flash can fire with no visit in flight at all (router.flash()) — fall back
+    // to the most recent record so the flash is still visible somewhere sensible.
+    if (event.name === 'inertia:flash') {
+      return this.resolveInFlight() ?? this.sortedRecords[this.sortedRecords.length - 1] ?? null
+    }
+
+    return this.resolveInFlight()
+  }
+
   /**
    * Create a prefetch record when inertia:start confirms a real request was made.
    * The beforeEvent was deferred from handleBefore; startEvent is the current inertia:start.
    */
   private createPrefetchRecord(
     visit: InertiaVisitDetail,
+    uuid: string,
     beforeEvent: CapturedEvent,
     startEvent: CapturedEvent,
     timestamp: number,
@@ -480,6 +518,7 @@ export class Correlator {
 
     const record: RequestRecord = {
       visitId,
+      inertiaVisitId: uuid,
       type: 'prefetch',
       method,
       url,
@@ -495,78 +534,31 @@ export class Correlator {
     }
 
     this.insertRecord(record)
-    // Store fingerprint for finish event correlation
-    const fingerprint = this.visitFingerprint(visit)
-    this.pushFingerprint(fingerprint, visitId)
-    this.activeVisitId = visitId
+    this.uuidMap.set(uuid, visitId)
     return record
   }
 
   // --- Resolution helpers ---
 
-  /**
-   * Create a visit fingerprint from event detail for correlation.
-   * Uses url + method + only + deferredProps to uniquely identify a visit.
-   */
-  private visitFingerprint(visit: InertiaVisitDetail | undefined): string {
-    if (!visit) return '(no-visit)'
-    const url = this.extractUrl(visit)
-    const method = (visit.method ?? 'GET').toUpperCase()
-    const only = JSON.stringify(visit.only ?? [])
-    const except = JSON.stringify(visit.except ?? [])
-    const deferred = visit.deferredProps ? 'd' : ''
-    const prefetch = visit.prefetch ? 'p' : ''
-    return `${url}|${method}|${only}|${except}|${deferred}|${prefetch}`
-  }
-
-  private pushFingerprint(fingerprint: string, visitId: number): void {
-    const queue = this.fingerprintMap.get(fingerprint)
-    if (queue) {
-      queue.push(visitId)
-    } else {
-      this.fingerprintMap.set(fingerprint, [visitId])
-    }
-  }
-
-  private removeFromFingerprintMap(visitId: number): void {
-    for (const [fingerprint, queue] of this.fingerprintMap) {
-      const idx = queue.indexOf(visitId)
-      if (idx !== -1) {
-        queue.splice(idx, 1)
-        if (queue.length === 0) this.fingerprintMap.delete(fingerprint)
-        return
-      }
-    }
+  private resolveByUuid(uuid: string | undefined): RequestRecord | null {
+    if (!uuid) return null
+    const visitId = this.uuidMap.get(uuid)
+    if (visitId === undefined) return null
+    return this.records.get(visitId) ?? null
   }
 
   /**
-   * Resolve a record by visit fingerprint. Uses FIFO order (first before → first start).
-   * Peeks at the front of the queue without removing; finish will clean up.
+   * Fallback for events that carry no visit id: the most recently started
+   * record that has not finished yet.
    */
-  private resolveByFingerprint(event: CapturedEvent): RequestRecord | null {
-    const visit = this.extractVisit(event.detail)
-    if (!visit) return null
-
-    const fingerprint = this.visitFingerprint(visit)
-    const queue = this.fingerprintMap.get(fingerprint)
-    if (!queue || queue.length === 0) return null
-
-    // For finish events, consume (shift) the entry since the visit is complete
-    if (event.name === 'inertia:finish') {
-      const visitId = queue.shift()!
-      if (queue.length === 0) {
-        this.fingerprintMap.delete(fingerprint)
-      }
-      return this.records.get(visitId) ?? null
+  private resolveInFlight(options?: { excludeDeferred?: boolean }): RequestRecord | null {
+    for (let i = this.sortedRecords.length - 1; i >= 0; i--) {
+      const r = this.sortedRecords[i]
+      if (r.finishedAt != null) continue
+      if (options?.excludeDeferred && r.type === 'deferred') continue
+      return r
     }
-
-    // For start and other events, peek at the first entry
-    return this.records.get(queue[0]) ?? null
-  }
-
-  private resolveByActiveId(): RequestRecord | null {
-    if (this.activeVisitId === null) return null
-    return this.records.get(this.activeVisitId) ?? null
+    return null
   }
 
   // --- Record management ---
@@ -600,19 +592,21 @@ export class Correlator {
       const r = this.sortedRecords[i]
       if (r.finishedAt != null) {
         this.sortedRecords.splice(i, 1)
-        this.records.delete(r.visitId)
-        this.removeFromFingerprintMap(r.visitId)
-        this._evictedCount++
+        this.deleteRecord(r)
         return
       }
     }
     // If no completed records, evict the oldest regardless
     const oldest = this.sortedRecords.shift()
     if (oldest) {
-      this.records.delete(oldest.visitId)
-      this.removeFromFingerprintMap(oldest.visitId)
-      this._evictedCount++
+      this.deleteRecord(oldest)
     }
+  }
+
+  private deleteRecord(record: RequestRecord): void {
+    this.records.delete(record.visitId)
+    if (record.inertiaVisitId) this.uuidMap.delete(record.inertiaVisitId)
+    this._evictedCount++
   }
 
   // --- Visit extraction helper ---
@@ -623,12 +617,18 @@ export class Correlator {
     return visit as InertiaVisitDetail
   }
 
+  private visitUuid(visit: InertiaVisitDetail | undefined): string | undefined {
+    const id = visit?.id
+    return typeof id === 'string' ? id : undefined
+  }
+
   /**
    * Extract visit options worth displaying from the visit detail.
    * Omits internal/noise fields and default/empty values.
    */
   private extractVisitOptions(visit: InertiaVisitDetail): Record<string, unknown> | undefined {
     const skip = new Set([
+      'id',
       'method',
       'url',
       'href',

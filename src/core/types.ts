@@ -54,6 +54,8 @@ export interface RequestRecord {
   url: string
   only?: string[]
   except?: string[]
+  /** Served from the prefetch cache (navigate fired with cached: true). */
+  cached?: boolean
   status?: number
   startedAt: number
   finishedAt?: number
