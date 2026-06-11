@@ -33,6 +33,7 @@ export class DevToolsStore {
   private previousSession: ReturnType<typeof loadSession> = null
   private saveTimer: ReturnType<typeof setTimeout> | undefined
   private networkCaptureMode: NetworkCaptureMode = 'pending'
+  private legacyInertiaWarned = false
 
   constructor(options: DevToolsOptions = {}) {
     this.options = options
@@ -105,6 +106,8 @@ export class DevToolsStore {
     const rawDetail = event.detail
     const detail = this.safeSerializeDetail(rawDetail)
 
+    this.warnOnceOnLegacyInertia(detail)
+
     const captured: CapturedEvent = {
       id: this.nextEventId++,
       name,
@@ -166,6 +169,24 @@ export class DevToolsStore {
   }
 
   // --- Internal ---
+
+  /**
+   * Correlation requires the visit UUID introduced in Inertia 3.4.
+   * A visit-carrying event without one means the app runs an older Inertia —
+   * warn once and point at the legacy devtools line.
+   */
+  private warnOnceOnLegacyInertia(detail: Record<string, unknown>): void {
+    if (this.legacyInertiaWarned) return
+    const visit = detail.visit
+    if (visit == null || typeof visit !== 'object') return
+    if (typeof (visit as Record<string, unknown>).id === 'string') return
+
+    this.legacyInertiaWarned = true
+    console.warn(
+      '[inertia-devtools] Inertia events carry no visit id — this version requires Inertia >= 3.4. ' +
+        'For Inertia v2 / v3.0–3.3, use inertia-devtools@0.1 instead.',
+    )
+  }
 
   private notify(): void {
     this.tick++

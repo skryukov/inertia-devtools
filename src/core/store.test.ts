@@ -24,6 +24,7 @@ describe('DevToolsStore', () => {
   describe('captureEvent', () => {
     it('captures a DOM event and creates a request record', () => {
       const visit = {
+        id: 'visit-1',
         method: 'get',
         url: new URL('http://localhost/users'),
         completed: false,
@@ -44,6 +45,7 @@ describe('DevToolsStore', () => {
 
     it('serializes URL objects in event detail', () => {
       const visit = {
+        id: 'visit-2',
         method: 'get',
         url: new URL('http://localhost/test?foo=bar'),
         only: [],
@@ -60,6 +62,31 @@ describe('DevToolsStore', () => {
       store.captureEvent('inertia:navigate', makeCustomEvent('inertia:navigate', null))
       // Should not throw
       expect(store.getState().requests).toHaveLength(0)
+    })
+  })
+
+  describe('legacy Inertia warning', () => {
+    it('warns once when visit events carry no id (pre-3.4)', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const legacyVisit = { method: 'get', url: new URL('http://localhost/a'), only: [], except: [] }
+      store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: legacyVisit }))
+      store.captureEvent('inertia:start', makeCustomEvent('inertia:start', { visit: legacyVisit }))
+
+      const legacyWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('requires Inertia >= 3.4'))
+      expect(legacyWarnings).toHaveLength(1)
+      warnSpy.mockRestore()
+    })
+
+    it('does not warn when visit events carry an id', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const visit = { id: 'v-1', method: 'get', url: new URL('http://localhost/a'), only: [], except: [] }
+      store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit }))
+
+      const legacyWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('requires Inertia >= 3.4'))
+      expect(legacyWarnings).toHaveLength(0)
+      warnSpy.mockRestore()
     })
   })
 
