@@ -1058,7 +1058,7 @@ describe('Correlator', () => {
       expect(requests).toHaveLength(2)
       expect(requests[0].type).toBe('prefetch')
       expect(requests[1].type).toBe('prefetch')
-      expect(requests.map((r) => r.url).sort()).toEqual(['/a', '/b'])
+      expect(requests.map((r) => r.url).toSorted()).toEqual(['/a', '/b'])
     })
 
     it('finalizes a cache-served click on navigate without start/finish', () => {

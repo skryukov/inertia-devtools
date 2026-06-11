@@ -95,7 +95,11 @@
       {:else if ctx.activeTab === 'events'}
         <EventsTab request={ctx.selectedRequest} />
       {:else if ctx.activeTab === 'network'}
-        <NetworkTab request={ctx.selectedRequest} docsProvider={ctx.docsProvider} />
+        <NetworkTab
+          request={ctx.selectedRequest}
+          captureMode={ctx.state.networkCaptureMode}
+          docsProvider={ctx.docsProvider}
+        />
       {/if}
     </div>
   {:else}

@@ -661,7 +661,7 @@ export class Correlator {
   private wireResponseFromPayload(response: Record<string, unknown>, timestamp: number): WireResponseData {
     return {
       status: typeof response.status === 'number' ? response.status : 0,
-      headers: { ...((response.headers as Record<string, string> | undefined) ?? {}) },
+      headers: { ...(response.headers as Record<string, string> | undefined) },
       bodySize: wireBodySize(response.data),
       finishedAt: timestamp,
     }

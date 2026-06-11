@@ -77,7 +77,7 @@ function subscribe(store: DevToolsStore): StopFunction | null {
         store.attachWireRequest(uuid, {
           method: String(config?.method ?? 'get').toUpperCase(),
           url: String(config?.url ?? ''),
-          headers: { ...(config?.headers ?? {}) },
+          headers: { ...config?.headers },
           startedAt: performance.now(),
         })
       }
@@ -93,7 +93,7 @@ function subscribe(store: DevToolsStore): StopFunction | null {
       if (uuid) {
         store.attachWireResponse(uuid, {
           status: typeof response?.status === 'number' ? response.status : 0,
-          headers: { ...(response?.headers ?? {}) },
+          headers: { ...response?.headers },
           bodySize: wireBodySize(response?.data),
           finishedAt: performance.now(),
         })
