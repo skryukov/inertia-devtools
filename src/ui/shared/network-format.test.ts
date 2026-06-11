@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { sortedHeaders, statusKind, formatBytes, networkDuration, timingLine, captureModeNotice } from './network-format'
+import {
+  sortedHeaders,
+  statusKind,
+  formatBytes,
+  networkDuration,
+  timingLine,
+  captureModeNotice,
+} from './network-format'
 import type { RequestRecord } from '../../core/types'
 
 function makeRecord(overrides: Partial<RequestRecord> = {}): RequestRecord {

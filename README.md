@@ -1,6 +1,6 @@
 # Inertia DevTools
 
-In-app developer tools for [Inertia.js](https://inertiajs.com/) v2.0+. See what happens behind every click.
+In-app developer tools for [Inertia.js](https://inertiajs.com/) v3.4+. See what happens behind every click.
 
 <p align="center">
   <img src=".github/screenshot.png" alt="Inertia DevTools screenshot" width="800">
@@ -56,7 +56,7 @@ Compare props between navigations. Added, removed, and changed keys are highligh
 
 ### Network Tab
 
-HTTP request/response details with Inertia protocol fields (`X-Inertia`, `X-Inertia-Version`, partial data, etc.) and inline tooltips explaining each header.
+Actual HTTP request/response data from the wire: status codes, request and response headers (`X-Inertia-*` highlighted), timing, and payload size — captured via Inertia's dev-mode interceptors. When interceptors are unavailable, falls back to timing-only data with protocol fields inferred from client-side state.
 
 ### Events Timeline
 
@@ -82,7 +82,7 @@ Badges appear automatically for active Inertia features:
 | SCROLL        | Scroll regions                     |
 | ONCE          | Once props                         |
 | PREFETCH      | Prefetched request                 |
-| CACHED        | Used prefetch cache (no XHR)       |
+| CACHED        | Served from the prefetch cache     |
 | FLASH         | Flash data present                 |
 | REMEMBER      | Remembered local state             |
 | ENCRYPTED     | Encrypted history                  |
@@ -119,14 +119,21 @@ createInertiaDevtools({
 
 ## How It Works
 
-Listens to Inertia DOM events and correlates them into request records. Intercepts XHR/fetch for network data and the history API for client-side visits.
+Listens to Inertia DOM events and correlates them into request records by visit id. Client-side visits (`router.push`/`replace`/`replaceProp`/...) arrive via the `inertia:clientVisit` event. Network data (headers, status, body size) comes from Inertia's dev-mode interceptors (`window.__inertia_interceptors__`, exposed when `createInertiaApp`'s `dev` option is on — the default in Vite dev mode), with PerformanceObserver supplying resource timing and acting as the fallback. Nothing is monkey-patched.
 
 The UI renders inside a Shadow DOM -- your app styles are never affected. State is kept in a bounded buffer (200 requests max).
 
 ## Requirements
 
-- [Inertia.js](https://inertiajs.com/) v2.0+
+- [Inertia.js](https://inertiajs.com/) v3.4+
 - Modern browser (ES2020+)
+
+### Version compatibility
+
+| inertia-devtools | Inertia.js     |
+| ---------------- | -------------- |
+| 0.2.x            | >= 3.4         |
+| 0.1.x            | v2.x, v3.0–3.3 |
 
 ## Development
 

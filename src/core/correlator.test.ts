@@ -1243,9 +1243,7 @@ describe('Correlator', () => {
     })
 
     it('attachWireRequest returns null for unknown ids', () => {
-      expect(
-        correlator.attachWireRequest('nope', { method: 'GET', url: '/x', headers: {}, startedAt: 1 }),
-      ).toBeNull()
+      expect(correlator.attachWireRequest('nope', { method: 'GET', url: '/x', headers: {}, startedAt: 1 })).toBeNull()
     })
   })
 

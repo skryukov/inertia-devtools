@@ -173,9 +173,7 @@ describe('startInterceptorCapture', () => {
     window.__inertia_interceptors__ = fake
     startInterceptorCapture(store)
 
-    expect(() =>
-      fake.requestHandlers[0](makeVisit('v-unknown'), { method: 'get', url: '', headers: {} }),
-    ).not.toThrow()
+    expect(() => fake.requestHandlers[0](makeVisit('v-unknown'), { method: 'get', url: '', headers: {} })).not.toThrow()
     expect(store.getState().requests).toHaveLength(0)
   })
 

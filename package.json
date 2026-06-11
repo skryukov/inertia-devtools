@@ -1,6 +1,6 @@
 {
   "name": "inertia-devtools",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Developer tools for Inertia.js — see what happens behind every click",
   "author": "Svyatoslav Kryukov <me@skryukov.dev>",
   "license": "MIT",

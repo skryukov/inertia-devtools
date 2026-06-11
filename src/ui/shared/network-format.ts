@@ -28,7 +28,7 @@ export type StatusKind = 'success' | 'redirect' | 'error'
 
 export function statusKind(status: number): StatusKind {
   if (status >= 200 && status < 300) return 'success'
-  if (status >= 300 && status < 400 || status === 409) return 'redirect'
+  if ((status >= 300 && status < 400) || status === 409) return 'redirect'
   return 'error'
 }
 
