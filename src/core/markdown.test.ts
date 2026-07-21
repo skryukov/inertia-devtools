@@ -525,3 +525,79 @@ describe('requestToJSON', () => {
     expect(json).toContain('[Circular]')
   })
 })
+
+describe('export redaction (page props reach the clipboard)', () => {
+  // Rails and Laravel adapters share a live csrf_token in props on EVERY page.
+  // "Copy for AI" exists to be pasted into issues and chats, so every exporter
+  // has to mask them — enumerated here rather than spot-checked, because the
+  // last redaction pass shipped with a third leak path nobody had listed.
+  const SECRETS = {
+    csrf_token: 'CSRF-LIVE-aaa',
+    api_token: 'API-LIVE-bbb',
+    stripe_secret: 'SK-LIVE-ccc',
+    _token: 'UNDERSCORE-LIVE-ddd',
+    session_id: 'SESSION-LIVE-eee',
+  }
+
+  // Distinct values per page so the DIFF exporter must emit them as changed —
+  // identical values would be reported as unchanged and silently pass.
+  function pageWithSecrets(component: string, tag = ''): InertiaPage {
+    const tagged = Object.fromEntries(Object.entries(SECRETS).map(([k, v]) => [k, v + tag]))
+    return {
+      component,
+      props: { users: [{ name: 'Ada' }], ...tagged, nested: { deep: { api_key: 'NESTED-LIVE-fff' + tag } } },
+      url: '/users',
+      version: 'a3f2c1d',
+      clearHistory: false,
+      encryptHistory: false,
+      flash: {},
+    }
+  }
+
+  const leaky = () =>
+    makeRequest({
+      page: pageWithSecrets('Pages/Users/Index'),
+      previousPage: pageWithSecrets('Pages/Users/Edit', '-PREV'),
+      events: [
+        {
+          id: 1,
+          name: 'inertia:success',
+          timestamp: 10,
+          // safeSerializeDetail structuredClones `page` verbatim, so raw event
+          // details carry a second full copy of the props.
+          detail: { page: pageWithSecrets('Pages/Users/Index') },
+        } as CapturedEvent,
+      ],
+    })
+
+  const ALL_SECRETS = [...Object.values(SECRETS), 'NESTED-LIVE-fff']
+
+  const exporters: Array<[string, (r: RequestRecord) => string]> = [
+    ['requestToMarkdown', requestToMarkdown],
+    ['diffToMarkdown', diffToMarkdown],
+    ['eventsToMarkdown', eventsToMarkdown],
+    ['networkToMarkdown', networkToMarkdown],
+    ['requestToJSON', requestToJSON],
+  ]
+
+  for (const [name, exporter] of exporters) {
+    it(`${name} leaks no credential from props, previousPage, or event details`, () => {
+      const output = exporter(leaky())
+      for (const secret of ALL_SECRETS) {
+        expect(output, `${name} leaked ${secret}`).not.toContain(secret)
+      }
+    })
+  }
+
+  it('still exports the non-sensitive props that make the export useful', () => {
+    const output = requestToJSON(leaky())
+    expect(output).toContain('Ada')
+    expect(output).toContain('Pages/Users/Index')
+  })
+
+  it('marks masked values rather than dropping the keys', () => {
+    const output = requestToJSON(leaky())
+    expect(output).toContain('csrf_token')
+    expect(output).toContain('[REDACTED]')
+  })
+})

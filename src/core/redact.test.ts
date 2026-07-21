@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { REDACTED, isSensitiveKey, redactHeaders, redactDeep } from './redact'
+import { REDACTED, isSensitiveKey, redactHeaders, redactDeep, redactExport } from './redact'
 
 describe('isSensitiveKey', () => {
   it.each([
@@ -131,5 +131,38 @@ describe('redactDeep', () => {
     expect(out.password).toBe(REDACTED)
     expect(input.password).toBe('hunter2')
     expect(input.nested.token).toBe('t')
+  })
+})
+
+describe('redactExport', () => {
+  it('has no depth cap, unlike the capture-path walker', () => {
+    // redactDeep bails at depth 8 and returns the raw subtree — fail-open,
+    // acceptable on a hot path, wrong at an export boundary.
+    let deep: Record<string, unknown> = { api_token: 'LEAK' }
+    for (let i = 0; i < 15; i++) deep = { nest: deep }
+
+    expect(JSON.stringify(redactDeep(deep))).toContain('LEAK')
+    expect(JSON.stringify(redactExport(deep))).not.toContain('LEAK')
+  })
+
+  it('survives a cycle instead of recursing forever', () => {
+    const cyclic: Record<string, unknown> = { name: 'root', token: 'LEAK' }
+    cyclic.self = cyclic
+    const out = JSON.stringify(redactExport(cyclic))
+    expect(out).not.toContain('LEAK')
+    expect(out).toContain('[Circular]')
+  })
+
+  it('keeps the structure and the harmless values', () => {
+    expect(redactExport({ users: [{ name: 'Ada' }], csrf_token: 'LEAK' })).toEqual({
+      users: [{ name: 'Ada' }],
+      csrf_token: REDACTED,
+    })
+  })
+
+  it('does not mutate the input', () => {
+    const input = { csrf_token: 'keep-me' }
+    redactExport(input)
+    expect(input.csrf_token).toBe('keep-me')
   })
 })

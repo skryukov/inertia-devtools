@@ -59,6 +59,41 @@ export function redactDeep(value: unknown, depth = 0): unknown {
   return out
 }
 
+/**
+ * Redact a value on its way OUT of the tool — exports, clipboard, markdown.
+ *
+ * Page props are deliberately NOT masked at capture: you cannot debug props you
+ * cannot see, and the panel is the developer's own screen. The export is a
+ * different audience — "Copy for AI" exists to be pasted into a GitHub issue or
+ * a chat — and the Rails and Laravel adapters put a live `csrf_token` in props
+ * on *every* page, alongside whatever else the app shares (session tokens, the
+ * signed-in user's PII).
+ *
+ * Unlike `redactDeep` this takes no depth cap. That one runs on every captured
+ * event and is bounded on purpose, but bailing out past a depth limit returns
+ * the raw subtree — fail-open, which is exactly wrong at an export boundary.
+ * Here the walk is user-initiated and rare, so it goes all the way down and
+ * uses a seen-set for cycles instead.
+ */
+export function redactExport<T>(value: T): T {
+  return walkForExport(value, new WeakSet()) as T
+}
+
+function walkForExport(value: unknown, seen: WeakSet<object>): unknown {
+  if (value === null || typeof value !== 'object') return value
+  if (seen.has(value)) return '[Circular]'
+  seen.add(value)
+
+  if (Array.isArray(value)) return value.map((entry) => walkForExport(entry, seen))
+  if (!isPlainObject(value)) return value
+
+  const out: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    out[key] = isSensitiveKey(key) ? REDACTED : walkForExport(entry, seen)
+  }
+  return out
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object') return false
   const proto = Object.getPrototypeOf(value)

@@ -3,6 +3,7 @@
   import type { ActiveFeature, VisitType, DocsProvider, RequestRecord } from '../../core/types'
   import { diffProps, countTopLevelChanges } from '../../core/diff'
   import { diffToMarkdown } from '../../core/markdown'
+  import { redactExport } from '../../core/redact'
   import { featureColor } from '../shared/feature-colors'
   import { getFeatureInfo } from '../shared/feature-info'
   import { copyToClipboard } from '../shared/clipboard'
@@ -152,7 +153,9 @@
 
   // --- Copy actions ---
   function handleCopyRaw() {
-    copyToClipboard(JSON.stringify(page, null, 2))
+    // Bypasses markdown.ts, so it needs the export redaction of its own —
+    // this button puts props straight on the clipboard.
+    copyToClipboard(JSON.stringify(redactExport(page), null, 2))
     onCopied?.()
   }
 

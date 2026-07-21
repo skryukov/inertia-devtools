@@ -8,9 +8,34 @@ import type { RequestRecord, CapturedEvent } from './types'
 import { diffProps, type DiffNode } from './diff'
 import { getFeatureInfo } from './feature-info'
 import { sortedHeaders } from './headers'
+import { redactExport } from './redact'
+
+/**
+ * Mask credentials in everything an export can reach.
+ *
+ * Page props are kept raw in the store on purpose — the panel is the
+ * developer's own screen and you cannot debug props you cannot see. The
+ * clipboard is a different audience, and the Rails and Laravel adapters put a
+ * live `csrf_token` in props on every page.
+ *
+ * Applied to all five exporters, including the two that carry no prop values
+ * today: the cost is nil for those, and it means adding a props dump to one of
+ * them later cannot quietly reopen this. `events[].detail` matters as much as
+ * `page` — `safeSerializeDetail` structuredClones the page verbatim, so the raw
+ * events hold a second full copy.
+ */
+function forExport(request: RequestRecord): RequestRecord {
+  return {
+    ...request,
+    page: request.page ? redactExport(request.page) : request.page,
+    previousPage: request.previousPage ? redactExport(request.previousPage) : request.previousPage,
+    events: request.events.map((event) => ({ ...event, detail: redactExport(event.detail) })),
+  }
+}
 
 /** Full snapshot — context header + raw page JSON */
 export function requestToMarkdown(request: RequestRecord): string {
+  request = forExport(request)
   const sections: string[] = [formatHeader(request)]
 
   if (request.features.length > 0) {
@@ -173,6 +198,7 @@ function wireBody(request: RequestRecord): string | null {
 
 /** Standalone Network snapshot — wire headers, status, size, Server-Timing. */
 export function networkToMarkdown(request: RequestRecord): string {
+  request = forExport(request)
   const lines = ['## Inertia Network', '', `**Navigation:** ${navigationLine(request)}`]
   const body = wireBody(request)
   lines.push('', body ?? '_No wire data captured — HTTP details were not observed for this visit._')
@@ -229,6 +255,7 @@ function transition(oldVal: string | undefined, newVal: string | undefined): str
 
 /** Compact markdown of the props diff between previousPage and page. */
 export function diffToMarkdown(request: RequestRecord): string {
+  request = forExport(request)
   const prev = request.previousPage
   const page = request.page
 
@@ -314,6 +341,7 @@ function groupProgressEvents(events: CapturedEvent[]): CapturedEvent[][] {
 
 /** Event timeline — one line per event with +offset and terse payload highlights. */
 export function eventsToMarkdown(request: RequestRecord): string {
+  request = forExport(request)
   const lines = [
     '## Inertia Events',
     '',
@@ -348,6 +376,7 @@ export function eventsToMarkdown(request: RequestRecord): string {
  * correlation ids (visitId, event ids) that would confuse an agent.
  */
 export function requestToJSON(request: RequestRecord): string {
+  request = forExport(request)
   const record = {
     type: request.type,
     method: request.method,
