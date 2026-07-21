@@ -298,11 +298,21 @@ export function diffToMarkdown(request: RequestRecord): string {
 }
 
 /** Overall visit outcome, mirroring the Events tab lifecycle summary. */
+/**
+ * `failed` is tested FIRST, and `completed` last of the terminal states.
+ *
+ * `failed && completed` is not a contradiction — it is the normal state of
+ * every 4xx and 5xx, because Inertia's `finish()` runs in a `.finally()` and
+ * sets completed regardless of outcome. Testing `completed` first therefore
+ * exported every HTTP error as "Outcome: completed", which is the one line a
+ * reader skims to find out whether the request worked.
+ */
 function outcomeLabel(request: RequestRecord): string {
-  if (request.completed) return 'completed'
+  if (request.prevented) return 'prevented'
   if (request.interrupted) return 'interrupted'
   if (request.cancelled) return 'cancelled'
-  if (request.prevented) return 'prevented'
+  if (request.failed) return request.status ? `failed (HTTP ${request.status})` : 'failed'
+  if (request.completed) return 'completed'
   return 'in progress'
 }
 

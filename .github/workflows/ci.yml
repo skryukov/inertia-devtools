@@ -24,6 +24,9 @@ jobs:
       # tsc silently ignores .svelte files, so `strict: true` said nothing
       # about roughly half the source. svelte-check is what actually gates it.
       - run: npm run check:svelte
+      # CSS custom properties fail silently: an undefined var() falls through to
+      # its fallback, or inherits. Four shipped that way.
+      - run: npm run check:css
       - run: npm test
       - run: npm run build
 

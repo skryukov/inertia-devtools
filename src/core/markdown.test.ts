@@ -420,6 +420,27 @@ describe('eventsToMarkdown', () => {
     expect(md).toContain('- +5ms `inertia:finish` — cancelled')
   })
 
+  it('reports an HTTP error as failed, not completed', () => {
+    // `failed && completed` is the NORMAL state of every 4xx/5xx: Inertia's
+    // finish() runs in a .finally() and sets completed regardless. Testing
+    // completed first made every server error export as "Outcome: completed" —
+    // the one line a reader skims to see whether the request worked.
+    const md = eventsToMarkdown(makeRequest({ failed: true, completed: true, status: 500 }))
+    expect(md).toContain('**Outcome:** failed (HTTP 500)')
+    expect(md).not.toContain('**Outcome:** completed')
+  })
+
+  it('still reports a plain success as completed', () => {
+    expect(eventsToMarkdown(makeRequest({ completed: true, status: 200 }))).toContain('**Outcome:** completed')
+  })
+
+  it('prefers an explicit cancel over the failed flag', () => {
+    // A cancelled request is also marked failed by some paths; "cancelled" is
+    // the more specific and more useful answer.
+    const md = eventsToMarkdown(makeRequest({ failed: true, completed: true, cancelled: true }))
+    expect(md).toContain('**Outcome:** cancelled')
+  })
+
   it('highlights prevented and cache-served events', () => {
     const md = eventsToMarkdown(
       makeRequest({

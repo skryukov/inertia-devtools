@@ -110,6 +110,26 @@ export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
       --dt-emerald: oklch(0.696 0.17 162);
       --dt-yellow: oklch(0.795 0.184 86);
 
+      /*
+       * Semantic aliases. These were REFERENCED and never defined, so every
+       * var(--dt-success|warning|error) fell through to a hardcoded hex
+       * fallback that bypassed light-theme tuning entirely (#f59e0b on white is
+       * about 2.2:1). Declared once: both scopes target the same host element,
+       * so the light block's redefinition of --dt-green et al. flows through.
+       */
+      --dt-success: var(--dt-green);
+      --dt-warning: var(--dt-amber);
+      --dt-error: var(--dt-red);
+
+      /*
+       * One step dimmer than --dt-text-muted, for explanatory notes. It had no
+       * definition and no fallback, so the text simply INHERITED its parent
+       * colour and rendered at full strength — the opposite of the intent.
+       * L=0.65 measures 5.47:1 on --dt-bg and 4.72:1 on --dt-bg-card, so it
+       * clears AA on both surfaces. The light theme overrides it below.
+       */
+      --dt-text-dim: oklch(0.65 0.013 286);
+
       /* Opacity-based state colors — swap overlay base per theme */
       --dt-overlay: 1 0 0; /* white in dark mode */
       --dt-hover: oklch(var(--dt-overlay) / 0.05);
@@ -141,6 +161,14 @@ export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
       --dt-teal: oklch(0.536 0.112 182);
       --dt-emerald: oklch(0.528 0.155 162);
       --dt-yellow: oklch(0.636 0.165 86);
+
+      /*
+       * Equal to --dt-text-muted on purpose. In a light theme "dimmer" means
+       * lighter, which lowers contrast — and muted is already only 4.83:1 on
+       * white, so there is no headroom to spend. Dimming it further would buy
+       * a visual nuance by dropping explanatory text below AA.
+       */
+      --dt-text-dim: oklch(0.552 0.016 286);
 
       --dt-overlay: 0 0 0; /* black in light mode */
       --dt-hover: oklch(var(--dt-overlay) / 0.04);

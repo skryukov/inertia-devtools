@@ -444,7 +444,7 @@ describe('failed requests (adversarial recall)', () => {
     })
   })
 
-  describe('rescued props (Inertia >= 3.6)', () => {
+  describe('rescued props (required on Page since 3.4.0, not 3.6+)', () => {
     it('reports a prop the server rescued instead of blaming the partial reload', () => {
       const req = makeRequest({
         type: 'deferred',

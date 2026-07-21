@@ -243,11 +243,16 @@ function detectDiscardedResponse(req: RequestRecord): Diagnostic | null {
 }
 
 /**
- * Inertia >= 3.6: a prop resolver that throws server-side can be rescued
+ * A prop resolver that throws server-side can be rescued
  * (`Inertia::defer(..., rescue: true)`), so the response omits the prop and
  * lists it in `page.rescuedProps` — a 200 that silently lost data. Report only
  * props THIS visit newly rescued; the list persists across visits until a
  * partial reload re-requests them, which would otherwise re-warn forever.
+ *
+ * NOT 3.6+, as this said until now: `rescuedProps: string[]` is a REQUIRED
+ * field of Page in @inertiajs/core 3.4.0 (types.d.ts:147), which is the floor
+ * the peer range declares. Labelling it 3.6 told every 3.4/3.5 user that a
+ * feature they already have is unavailable.
  */
 function detectRescuedProps(req: RequestRecord): Diagnostic | null {
   if (!propRulesApply(req)) return null

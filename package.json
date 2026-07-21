@@ -33,6 +33,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "check:svelte": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "check:css": "node scripts/check-css-tokens.mjs",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "prettier --write .",

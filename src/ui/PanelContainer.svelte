@@ -30,57 +30,86 @@
   })
 
   // Side edge resize: centered panel needs 2x delta, and left edge is inverted
-  function startSideResize(e: PointerEvent, side: 'left' | 'right') {
+  /**
+   * Shared drag plumbing for the side and corner handles.
+   *
+   * This is a second, hand-rolled resize implementation living alongside
+   * `resizable.svelte.ts`, and it missed that module's fixes. Three of them:
+   *
+   * - No `pointercancel`. A macOS two-finger back-swipe, or any touch gesture
+   *   the browser takes over, fires cancel and never `pointerup` — so the
+   *   `pointermove` listener stayed bound to the document forever and every
+   *   subsequent mouse movement resized the panel.
+   * - `releasePointerCapture` unguarded. After a cancel the capture is already
+   *   gone and it throws `InvalidStateError` — into the HOST app's error
+   *   reporting, from a devtool.
+   * - Bound to `document` rather than the element's own. In the PiP window that
+   *   is the wrong document, so dragging a handle there listened on the opener.
+   */
+  function startDrag(e: PointerEvent, onMove: (ev: PointerEvent) => void, onCommit: () => void) {
     const el = e.currentTarget as Element
     el.setPointerCapture(e.pointerId)
+    const doc = el.ownerDocument
+
+    function stop(commit: boolean) {
+      try {
+        el.releasePointerCapture(e.pointerId)
+      } catch {
+        /* capture already released by the cancel itself */
+      }
+      doc.removeEventListener('pointermove', onMove)
+      doc.removeEventListener('pointerup', onUp)
+      doc.removeEventListener('pointercancel', onCancel)
+      if (commit) onCommit()
+    }
+    function onUp() {
+      stop(true)
+    }
+    // Cancelled drags keep the size they reached on screen but are not
+    // persisted — the gesture was never finished deliberately.
+    function onCancel() {
+      stop(false)
+    }
+
+    doc.addEventListener('pointermove', onMove)
+    doc.addEventListener('pointerup', onUp)
+    doc.addEventListener('pointercancel', onCancel)
+  }
+
+  function startSideResize(e: PointerEvent, side: 'left' | 'right') {
     const startX = e.clientX
     const startW = panelWidth.size
 
-    function onMove(ev: PointerEvent) {
-      const dx = ev.clientX - startX
-      const widthDelta = side === 'left' ? -dx * 2 : dx * 2
-      panelWidth._setSize(startW + widthDelta)
-    }
-
-    function onUp() {
-      el.releasePointerCapture(e.pointerId)
-      document.removeEventListener('pointermove', onMove)
-      document.removeEventListener('pointerup', onUp)
-      panelWidth._save()
-    }
-
-    document.addEventListener('pointermove', onMove)
-    document.addEventListener('pointerup', onUp)
+    startDrag(
+      e,
+      (ev) => {
+        const dx = ev.clientX - startX
+        panelWidth._setSize(startW + (side === 'left' ? -dx * 2 : dx * 2))
+      },
+      () => panelWidth._save(),
+    )
   }
 
   // Corner resize: drag both width and height simultaneously
   function startCornerResize(e: PointerEvent, side: 'left' | 'right') {
-    const el = e.currentTarget as Element
-    el.setPointerCapture(e.pointerId)
     const startX = e.clientX
     const startY = e.clientY
     const startW = panelWidth.size
     const startH = panelHeight.size
 
-    function onMove(ev: PointerEvent) {
-      const dx = ev.clientX - startX
-      const dy = ev.clientY - startY
-
-      const widthDelta = side === 'left' ? -dx * 2 : dx * 2
-      panelWidth._setSize(startW + widthDelta)
-      panelHeight._setSize(startH - dy)
-    }
-
-    function onUp() {
-      el.releasePointerCapture(e.pointerId)
-      document.removeEventListener('pointermove', onMove)
-      document.removeEventListener('pointerup', onUp)
-      panelWidth._save()
-      panelHeight._save()
-    }
-
-    document.addEventListener('pointermove', onMove)
-    document.addEventListener('pointerup', onUp)
+    startDrag(
+      e,
+      (ev) => {
+        const dx = ev.clientX - startX
+        const dy = ev.clientY - startY
+        panelWidth._setSize(startW + (side === 'left' ? -dx * 2 : dx * 2))
+        panelHeight._setSize(startH - dy)
+      },
+      () => {
+        panelWidth._save()
+        panelHeight._save()
+      },
+    )
   }
 
   // Prevent scroll events from leaking to the host page
