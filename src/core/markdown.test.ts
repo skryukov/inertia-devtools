@@ -124,6 +124,37 @@ describe('requestToMarkdown', () => {
     expect(md).toContain('Network Error: timeout')
   })
 
+  it('renders validation errors as JSON rather than [object Object]', () => {
+    // inertia:error puts a field bag on `error` for a page that merged fine.
+    const md = requestToMarkdown(makeRequest({ error: { name: 'The name field is required.' } }))
+    expect(md).not.toContain('[object Object]')
+    expect(md).toContain('### Validation Errors')
+    expect(md).toContain('The name field is required.')
+  })
+
+  it('omits the section for an empty error bag', () => {
+    // Laravel/Rails adapters share `errors` on every page, empty or not.
+    expect(requestToMarkdown(makeRequest({ error: {} }))).not.toContain('Validation Errors')
+  })
+
+  it('reports a failed request as an error, not a validation bag', () => {
+    const md = requestToMarkdown(makeRequest({ failed: true, status: 500, error: 'HTTP 500' }))
+    expect(md).toContain('### Error')
+    expect(md).not.toContain('Validation Errors')
+  })
+
+  it('renders an Error instance by message', () => {
+    const md = requestToMarkdown(makeRequest({ failed: true, error: new Error('boom') }))
+    expect(md).toContain('Error: boom')
+    expect(md).not.toContain('[object Object]')
+  })
+
+  it('survives a circular error value', () => {
+    const circular: Record<string, unknown> = { a: 1 }
+    circular.self = circular
+    expect(() => requestToMarkdown(makeRequest({ failed: true, error: circular }))).not.toThrow()
+  })
+
   it('shows cancelled/interrupted flags', () => {
     const md = requestToMarkdown(makeRequest({ cancelled: true }))
     expect(md).toContain('**Cancelled:** Yes')
@@ -471,6 +502,12 @@ describe('requestToJSON', () => {
   it('stringifies errors and omits absent optional fields', () => {
     const parsed = JSON.parse(requestToJSON(makeRequest({ error: new Error('boom') }))) as Record<string, unknown>
     expect(parsed.error).toBe('Error: boom')
+  })
+
+  it('keeps validation errors structured instead of exporting [object Object]', () => {
+    const errors = { name: 'The name field is required.' }
+    const parsed = JSON.parse(requestToJSON(makeRequest({ error: errors }))) as Record<string, unknown>
+    expect(parsed.error).toEqual(errors)
     expect(parsed).not.toHaveProperty('wire')
     expect(parsed).not.toHaveProperty('redirectUrl')
   })

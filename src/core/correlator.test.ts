@@ -237,6 +237,18 @@ describe('Correlator', () => {
 
       const requests = correlator.getRequests()
       expect(requests[0].status).toBe(500)
+      expect(requests[0].failed).toBe(true)
+    })
+
+    it('marks the visit failed even when the event carries no response payload', () => {
+      const visit = makeVisitObject()
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:httpException', {}, 145))
+
+      // Without this, deferred-failed stays silent and the prop-shape rules
+      // analyze a page the failed response never delivered.
+      expect(correlator.getRequests()[0].failed).toBe(true)
     })
 
     it('detects 409 redirect via x-inertia-redirect (v3)', () => {

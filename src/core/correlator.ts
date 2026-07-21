@@ -573,14 +573,15 @@ export class Correlator {
       record.error = detail.errors
     } else if (event.name === 'inertia:httpException') {
       const response = detail.response as Record<string, unknown> | undefined
+      // The visit failed whether or not the event carried a response payload —
+      // httpException is the only failure signal for non-Inertia responses
+      // (networkError covers transport failures). No page ever merged.
+      record.failed = true
       if (response) {
         if (typeof response.status === 'number') {
           record.status = response.status
           record.error = `HTTP ${response.status}`
         }
-        // No page merged — httpException is the only failure signal for
-        // non-Inertia responses (networkError covers transport failures).
-        record.failed = true
 
         // Response interceptors fire only for Inertia responses that reach setPage — for
         // exceptions the event payload is the only source of wire data.

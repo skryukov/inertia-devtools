@@ -34,6 +34,9 @@ export default defineConfig({
 
 The plugin auto-injects devtools into your Inertia entrypoint and strips them from production builds automatically.
 
+> [!NOTE]
+> Auto-injection looks for a module that imports `createInertiaApp` from an `@inertiajs/*` package. If you wrap that import behind your own module, add `import 'inertia-devtools'` to your entrypoint yourself — the plugin still handles options and production stripping.
+
 ### Without Vite
 
 Import and initialize manually:

@@ -26,8 +26,9 @@ export function requestToMarkdown(request: RequestRecord): string {
     sections.push(wire)
   }
 
-  if (request.error) {
-    sections.push(`### Error\n\n\`\`\`\n${String(request.error)}\n\`\`\``)
+  const errorSection = formatError(request)
+  if (errorSection) {
+    sections.push(errorSection)
   }
 
   if (request.page) {
@@ -35,6 +36,47 @@ export function requestToMarkdown(request: RequestRecord): string {
   }
 
   return sections.join('\n\n')
+}
+
+/**
+ * `error` carries two different things: a failure (HTTP/network, a string or
+ * Error) and validation errors from inertia:error (a bag of field messages).
+ * String()-ing the latter produced "[object Object]", which is exactly the
+ * detail someone pasting this into an issue needs.
+ */
+function formatError(request: RequestRecord): string | null {
+  const { error } = request
+  if (error === undefined || error === null) return null
+
+  if (!request.failed && typeof error === 'object' && !(error instanceof Error)) {
+    const json = safeJson(error)
+    // An empty bag is noise — Inertia's adapters share `errors` on every page.
+    if (json === null || json === '{}') return null
+    return `### Validation Errors\n\n\`\`\`json\n${json}\n\`\`\``
+  }
+
+  const text = typeof error === 'string' || error instanceof Error ? String(error) : (safeJson(error) ?? String(error))
+  return `### Error\n\n\`\`\`\n${text}\n\`\`\``
+}
+
+/**
+ * Errors stringify by message; a validation bag keeps its structure, since
+ * String()-ing it exported "[object Object]" and lost every field message.
+ * requestToJSON's circular fallback covers non-serializable values.
+ */
+function errorForJson(error: unknown): unknown {
+  if (error === undefined || error === null) return undefined
+  if (error instanceof Error || typeof error !== 'object') return String(error)
+  return error
+}
+
+function safeJson(value: unknown): string | null {
+  try {
+    return JSON.stringify(value, null, 2) ?? null
+  } catch {
+    // Circular or non-serializable — the caller falls back to String().
+    return null
+  }
 }
 
 /** One-line navigation summary: `GET /users → 200 (45ms)` */
@@ -320,7 +362,7 @@ export function requestToJSON(request: RequestRecord): string {
     cancelled: request.cancelled,
     interrupted: request.interrupted,
     completed: request.completed,
-    error: request.error === undefined ? undefined : String(request.error),
+    error: errorForJson(request.error),
     redirectUrl: request.redirectUrl,
     features: request.features,
     diagnostics: request.diagnostics,
