@@ -1,6 +1,38 @@
 import { describe, it, expect } from 'vitest'
 import { computeDiagnostics } from './diagnostics'
 import type { RequestRecord } from './types'
+import type { InertiaPage } from './protocol'
+
+function makeLocationEvent(versionChange: boolean) {
+  return {
+    id: 1,
+    name: 'inertia:location' as const,
+    timestamp: 100,
+    detail: { url: 'http://localhost/posts/1', versionChange },
+  }
+}
+
+function makePage(overrides: Partial<InertiaPage> = {}): InertiaPage {
+  return {
+    component: 'Users/Index',
+    props: { users: [] },
+    url: '/users',
+    version: '1',
+    encryptHistory: false,
+    clearHistory: false,
+    flash: {},
+    ...overrides,
+  }
+}
+
+function makeSuccessEvent(page: InertiaPage, visitId = 'visit-1') {
+  return {
+    id: 2,
+    name: 'inertia:success' as const,
+    timestamp: 150,
+    detail: { page, visitId },
+  }
+}
 
 function makeRequest(overrides: Partial<RequestRecord> = {}): RequestRecord {
   return {
@@ -41,6 +73,21 @@ describe('computeDiagnostics', () => {
       const diags = computeDiagnostics(req)
       expect(diags.find((d) => d.id === 'version-mismatch')).toBeUndefined()
     })
+
+    it('splits by versionChange when inertia:location was captured (Inertia >= 3.6)', () => {
+      const base = { type: 'redirect' as const, status: 409 }
+
+      const mismatch = computeDiagnostics(makeRequest({ ...base, events: [makeLocationEvent(true)] }))
+      expect(mismatch.find((d) => d.id === 'version-mismatch')).toBeDefined()
+      expect(mismatch.find((d) => d.id === 'server-redirect')).toBeUndefined()
+
+      const redirect = computeDiagnostics(makeRequest({ ...base, events: [makeLocationEvent(false)] }))
+      const diag = redirect.find((d) => d.id === 'server-redirect')
+      expect(diag).toBeDefined()
+      expect(diag!.severity).toBe('info')
+      expect(diag!.message).toContain('inertia_location')
+      expect(redirect.find((d) => d.id === 'version-mismatch')).toBeUndefined()
+    })
   })
 
   describe('detectCancelledVisit', () => {
@@ -70,6 +117,15 @@ describe('computeDiagnostics', () => {
       expect(diag!.severity).toBe('info')
       expect(diag!.message).toContain('cancelled')
     })
+
+    it('detects prevented visit', () => {
+      const req = makeRequest({ prevented: true, completed: false })
+      const diags = computeDiagnostics(req)
+      const diag = diags.find((d) => d.id === 'visit-prevented')
+      expect(diag).toBeDefined()
+      expect(diag!.severity).toBe('info')
+      expect(diag!.message).toBe('Visit prevented by an inertia:before listener')
+    })
   })
 
   describe('detectPartialPropMissing', () => {
@@ -96,40 +152,180 @@ describe('computeDiagnostics', () => {
     it('does not trigger when all props are present', () => {
       const req = makeRequest({
         only: ['users', 'roles'],
-        page: {
-          component: 'Users/Index',
-          props: { users: [], roles: [] },
-          url: '/users',
-          version: '1',
-          encryptHistory: false,
-          clearHistory: false,
-          flash: {},
-        },
+        page: makePage({ props: { users: [], roles: [] } }),
       })
       const diags = computeDiagnostics(req)
       expect(diags.find((d) => d.id === 'partial-prop-missing')).toBeUndefined()
     })
-  })
 
-  describe('detectErrorsFiltered', () => {
-    it('detects errors filtered out with 422 status', () => {
-      const req = makeRequest({ only: ['name'], status: 422 })
+    it('resolves dot-path only entries against nested props', () => {
+      // only: ['users.data'] requests the nested path (isPathOrSubPath semantics)
+      const req = makeRequest({
+        only: ['users.data'],
+        page: makePage({ props: { users: { data: [], meta: { total: 0 } } } }),
+      })
       const diags = computeDiagnostics(req)
-      const diag = diags.find((d) => d.id === 'errors-filtered')
-      expect(diag).toBeDefined()
-      expect(diag!.severity).toBe('warning')
+      expect(diags.find((d) => d.id === 'partial-prop-missing')).toBeUndefined()
     })
 
-    it('does not trigger when only includes errors', () => {
-      const req = makeRequest({ only: ['name', 'errors'], status: 422 })
+    it('detects a missing nested path even when the top-level key exists', () => {
+      const req = makeRequest({
+        only: ['users.data'],
+        page: makePage({ props: { users: { meta: { total: 0 } } } }),
+      })
       const diags = computeDiagnostics(req)
-      expect(diags.find((d) => d.id === 'errors-filtered')).toBeUndefined()
+      const diag = diags.find((d) => d.id === 'partial-prop-missing')
+      expect(diag).toBeDefined()
+      expect(diag!.message).toContain('users.data')
+    })
+
+    it('counts a missing intermediate segment as missing', () => {
+      const req = makeRequest({
+        only: ['users.data.items'],
+        page: makePage({ props: { roles: [] } }),
+      })
+      const diags = computeDiagnostics(req)
+      expect(diags.find((d) => d.id === 'partial-prop-missing')).toBeDefined()
+    })
+
+    it('counts a non-object intermediate segment as missing', () => {
+      const req = makeRequest({
+        only: ['users.data'],
+        page: makePage({ props: { users: 'nope' } }),
+      })
+      const diags = computeDiagnostics(req)
+      expect(diags.find((d) => d.id === 'partial-prop-missing')).toBeDefined()
+    })
+  })
+
+  describe('detectStaleErrors', () => {
+    const errors = { name: 'Name is required' }
+
+    it('flags identical non-empty errors carried through a partial reload', () => {
+      const req = makeRequest({
+        only: ['users'],
+        page: makePage({ props: { users: [], errors } }),
+        previousPage: makePage({ props: { users: [], errors: { name: 'Name is required' } } }),
+      })
+      const diags = computeDiagnostics(req)
+      const diag = diags.find((d) => d.id === 'stale-errors')
+      expect(diag).toBeDefined()
+      expect(diag!.severity).toBe('info')
+      expect(diag!.message).toContain('may be stale')
+    })
+
+    it('flags except-based partial reloads too', () => {
+      const req = makeRequest({
+        except: ['largeProp'],
+        page: makePage({ props: { users: [], errors } }),
+        previousPage: makePage({ props: { users: [], errors: { name: 'Name is required' } } }),
+      })
+      expect(computeDiagnostics(req).find((d) => d.id === 'stale-errors')).toBeDefined()
+    })
+
+    it('does not trigger for full visits', () => {
+      const req = makeRequest({
+        page: makePage({ props: { errors } }),
+        previousPage: makePage({ props: { errors: { name: 'Name is required' } } }),
+      })
+      expect(computeDiagnostics(req).find((d) => d.id === 'stale-errors')).toBeUndefined()
+    })
+
+    it('does not trigger when the errors changed', () => {
+      const req = makeRequest({
+        only: ['users'],
+        page: makePage({ props: { users: [], errors: { email: 'Invalid' } } }),
+        previousPage: makePage({ props: { users: [], errors } }),
+      })
+      expect(computeDiagnostics(req).find((d) => d.id === 'stale-errors')).toBeUndefined()
+    })
+
+    it('does not trigger when errors are empty', () => {
+      const req = makeRequest({
+        only: ['users'],
+        page: makePage({ props: { users: [], errors: {} } }),
+        previousPage: makePage({ props: { users: [], errors: {} } }),
+      })
+      expect(computeDiagnostics(req).find((d) => d.id === 'stale-errors')).toBeUndefined()
+    })
+
+    it('does not trigger without a previous page to compare against', () => {
+      const req = makeRequest({
+        only: ['users'],
+        page: makePage({ props: { users: [], errors } }),
+      })
+      expect(computeDiagnostics(req).find((d) => d.id === 'stale-errors')).toBeUndefined()
+    })
+  })
+
+  describe('detectDiscardedResponse', () => {
+    // A discarded async response: shouldSetPage() bailed, so no beforeUpdate or
+    // navigate fired for this visit, but success fired with the current
+    // (superseding) page.
+    const supersedingPage = makePage({ component: 'Posts/Index', url: '/posts', props: { posts: [] } })
+
+    function makeDiscarded(overrides: Partial<RequestRecord> = {}): RequestRecord {
+      return makeRequest({
+        only: ['users'],
+        visitOptions: { async: true },
+        previousPage: makePage(),
+        page: supersedingPage,
+        events: [makeSuccessEvent(supersedingPage)],
+        ...overrides,
+      })
+    }
+
+    it('flags an async success whose page shows the app moved elsewhere', () => {
+      const diags = computeDiagnostics(makeDiscarded())
+      const diag = diags.find((d) => d.id === 'response-discarded')
+      expect(diag).toBeDefined()
+      expect(diag!.severity).toBe('info')
+      expect(diag!.message).toContain('superseded')
+    })
+
+    it('suppresses partial-prop-missing on discarded records', () => {
+      // req.page is the superseding page — judging `only` against it would lie
+      const diags = computeDiagnostics(makeDiscarded())
+      expect(diags.find((d) => d.id === 'partial-prop-missing')).toBeUndefined()
+    })
+
+    it('does not trigger when a navigate event was attached (response applied)', () => {
+      const navigate = { id: 3, name: 'inertia:navigate' as const, timestamp: 149, detail: { page: supersedingPage } }
+      const req = makeDiscarded({ events: [navigate, makeSuccessEvent(supersedingPage)] })
+      expect(computeDiagnostics(req).find((d) => d.id === 'response-discarded')).toBeUndefined()
+    })
+
+    it('does not trigger when a beforeUpdate event was attached (response applied)', () => {
+      const beforeUpdate = {
+        id: 3,
+        name: 'inertia:beforeUpdate' as const,
+        timestamp: 149,
+        detail: { page: supersedingPage },
+      }
+      const req = makeDiscarded({ events: [beforeUpdate, makeSuccessEvent(supersedingPage)] })
+      expect(computeDiagnostics(req).find((d) => d.id === 'response-discarded')).toBeUndefined()
+    })
+
+    it('does not trigger for sync visits', () => {
+      const req = makeDiscarded({ visitOptions: undefined })
+      expect(computeDiagnostics(req).find((d) => d.id === 'response-discarded')).toBeUndefined()
+    })
+
+    it('does not trigger when the app stayed on the originating page (same-URL replace)', () => {
+      const samePage = makePage({ props: { users: ['Alice'] } })
+      const req = makeDiscarded({ previousPage: makePage(), page: samePage, events: [makeSuccessEvent(samePage)] })
+      expect(computeDiagnostics(req).find((d) => d.id === 'response-discarded')).toBeUndefined()
+    })
+
+    it('does not trigger without a success event', () => {
+      const req = makeDiscarded({ events: [] })
+      expect(computeDiagnostics(req).find((d) => d.id === 'response-discarded')).toBeUndefined()
     })
   })
 
   describe('detectDeferredFailed', () => {
     it('detects failed deferred request', () => {
-      const req = makeRequest({ type: 'deferred', error: new Error('timeout') })
+      const req = makeRequest({ type: 'deferred', failed: true, error: new Error('timeout') })
       const diags = computeDiagnostics(req)
       const diag = diags.find((d) => d.id === 'deferred-failed')
       expect(diag).toBeDefined()
@@ -141,5 +337,98 @@ describe('computeDiagnostics', () => {
       const diags = computeDiagnostics(req)
       expect(diags.find((d) => d.id === 'deferred-failed')).toBeUndefined()
     })
+  })
+})
+
+describe('failed requests (adversarial recall)', () => {
+  it('deferred-failed fires when the deferred reload gets an HTTP error', () => {
+    const req = makeRequest({ type: 'deferred', status: 500, failed: true, error: 'HTTP 500', only: ['broken'] })
+    const diags = computeDiagnostics(req)
+    expect(diags.some((d) => d.id === 'deferred-failed')).toBe(true)
+  })
+
+  describe('rescued props (Inertia >= 3.6)', () => {
+    it('reports a prop the server rescued instead of blaming the partial reload', () => {
+      const req = makeRequest({
+        type: 'deferred',
+        status: 200,
+        only: ['stats'],
+        page: makePage({ props: { errors: {} }, rescuedProps: ['stats'] }),
+      })
+      const diags = computeDiagnostics(req)
+      expect(diags.find((d) => d.id === 'prop-rescued')).toBeDefined()
+      // The prop is absent on purpose — the old message blamed the wrong thing.
+      expect(diags.find((d) => d.id === 'partial-prop-missing')).toBeUndefined()
+    })
+
+    it('still flags a genuinely missing prop alongside a rescued one', () => {
+      const req = makeRequest({
+        only: ['stats', 'ghost'],
+        status: 200,
+        page: makePage({ props: { errors: {} }, rescuedProps: ['stats'] }),
+      })
+      const diag = computeDiagnostics(req).find((d) => d.id === 'partial-prop-missing')
+      expect(diag?.message).toContain('ghost')
+      expect(diag?.message).not.toContain('stats')
+    })
+
+    it('does not re-warn on later visits that merely carry the list forward', () => {
+      const req = makeRequest({
+        status: 200,
+        page: makePage({ rescuedProps: ['stats'] }),
+        previousPage: makePage({ rescuedProps: ['stats'] }),
+      })
+      expect(computeDiagnostics(req).find((d) => d.id === 'prop-rescued')).toBeUndefined()
+    })
+
+    it('warns again when a retry rescues the prop anew', () => {
+      const req = makeRequest({
+        status: 200,
+        only: ['stats'],
+        page: makePage({ rescuedProps: ['stats'] }),
+        // Inertia drops a rescued prop from the list when a partial reload
+        // re-requests it, so a fresh failure is a fresh entry.
+        previousPage: makePage({ rescuedProps: [] }),
+      })
+      expect(computeDiagnostics(req).find((d) => d.id === 'prop-rescued')).toBeDefined()
+    })
+
+    it('stays silent when nothing was rescued', () => {
+      const req = makeRequest({ status: 200, page: makePage({ rescuedProps: [] }) })
+      expect(computeDiagnostics(req).find((d) => d.id === 'prop-rescued')).toBeUndefined()
+    })
+  })
+
+  it('a deferred group whose response merely carried validation errors is not "failed to load"', () => {
+    const req = makeRequest({ type: 'deferred', status: 200, error: { name: 'is required' }, only: ['stats'] })
+    expect(computeDiagnostics(req).some((d) => d.id === 'deferred-failed')).toBe(false)
+  })
+
+  it('stale-errors still fires on a partial reload whose merged page carries validation errors', () => {
+    const errors = { name: 'is required' }
+    const req = makeRequest({
+      only: ['time'],
+      status: 200,
+      // inertia:error sets record.error for any merged page carrying errors —
+      // that must not be read as a failed request.
+      error: errors,
+      page: makePage({ props: { time: 1, errors } }),
+      previousPage: makePage({ props: { time: 0, errors: { name: 'is required' } } }),
+    })
+    expect(computeDiagnostics(req).some((d) => d.id === 'stale-errors')).toBe(true)
+  })
+
+  it('prop-shape rules stay silent on failed requests', () => {
+    const req = makeRequest({
+      type: 'deferred',
+      status: 500,
+      error: 'HTTP 500',
+      only: ['broken'],
+      page: { component: 'Bugs', url: '/bugs', version: '1', props: { errors: { name: 'bad' } }, flash: {} },
+      previousPage: { component: 'Bugs', url: '/bugs', version: '1', props: { errors: { name: 'bad' } }, flash: {} },
+    })
+    const diags = computeDiagnostics(req)
+    expect(diags.some((d) => d.id === 'partial-prop-missing')).toBe(false)
+    expect(diags.some((d) => d.id === 'stale-errors')).toBe(false)
   })
 })

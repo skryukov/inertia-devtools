@@ -1,5 +1,7 @@
 import type { RequestRecord, Diagnostic } from './types'
+import type { InertiaPage } from './protocol'
 import { normalizeUrl } from './url'
+import { deepEqual } from './diff'
 
 /** Run all diagnostic rules against a request record. */
 export function computeDiagnostics(req: RequestRecord): Diagnostic[] {
@@ -17,19 +19,39 @@ const rules: DiagnosticRule[] = [
   detectVersionMismatch,
   detectCancelledVisit,
   detectPartialPropMissing,
-  detectErrorsFiltered,
+  detectRescuedProps,
+  detectStaleErrors,
+  detectDiscardedResponse,
   detectDeferredFailed,
   detectHistoryReplace,
 ]
 
 function detectVersionMismatch(req: RequestRecord): Diagnostic | null {
+  // Inertia >= 3.6 fires inertia:location with the redirect reason. On
+  // 3.4/3.5 only the 409 response exists, so version mismatch and
+  // inertia_location redirects are indistinguishable — assume the former.
+  const location = req.events.find((e) => e.name === 'inertia:location')
+  if (location) {
+    if (location.detail.versionChange === true) {
+      return { id: 'version-mismatch', severity: 'warning', message: 'Version mismatch — full page reload' }
+    }
+    return { id: 'server-redirect', severity: 'info', message: 'Server redirect via inertia_location' }
+  }
   if (req.type === 'redirect' && req.status === 409) {
     return { id: 'version-mismatch', severity: 'warning', message: 'Version mismatch — full page reload' }
+  }
+  // 409 known only from Resource Timing (Inertia 3.4/3.5 fires no event for
+  // location 409s): report the forced reload without guessing the cause.
+  if (req.status === 409) {
+    return { id: 'forced-reload', severity: 'warning', message: '409 Conflict — server forced a full page reload' }
   }
   return null
 }
 
 function detectCancelledVisit(req: RequestRecord): Diagnostic | null {
+  if (req.prevented) {
+    return { id: 'visit-prevented', severity: 'info', message: 'Visit prevented by an inertia:before listener' }
+  }
   if (req.interrupted) {
     return { id: 'visit-interrupted', severity: 'info', message: 'Interrupted by a newer visit' }
   }
@@ -39,10 +61,44 @@ function detectCancelledVisit(req: RequestRecord): Diagnostic | null {
   return null
 }
 
+/**
+ * The client matches partial `only` entries with isPathOrSubPath: a dotted
+ * entry like 'users.data' requests the nested prop, and the adapter responds
+ * with the nested structure. Walk the path segment by segment — a missing
+ * intermediate segment counts as missing.
+ */
+function hasPropAtPath(props: Record<string, unknown>, path: string): boolean {
+  let current: unknown = props
+  for (const segment of path.split('.')) {
+    if (current === null || typeof current !== 'object' || !(segment in current)) {
+      return false
+    }
+    current = (current as Record<string, unknown>)[segment]
+  }
+  return true
+}
+
+/**
+ * A failed or discarded request says nothing about the server's prop shape.
+ * Keyed off `failed`, not `error` — `error` also holds validation errors, and
+ * those responses merged normally (guarding on them would silence the very
+ * rules that inspect merged errors).
+ */
+function propRulesApply(req: RequestRecord): boolean {
+  if (req.failed || (req.status ?? 0) >= 400) return false
+  return !isDiscardedResponse(req)
+}
+
 function detectPartialPropMissing(req: RequestRecord): Diagnostic | null {
-  if (req.only?.length && req.page?.props) {
-    const keys = Object.keys(req.page.props)
-    const missing = req.only.filter((k) => !keys.includes(k))
+  // A discarded response never merged, so req.page is the superseding page —
+  // judging the requested props against it would be a false alarm; failed
+  // requests never delivered props at all.
+  if (req.only?.length && req.page?.props && propRulesApply(req)) {
+    const props = req.page.props
+    // A rescued prop is absent on purpose — detectRescuedProps reports it with
+    // the real cause instead of blaming the partial reload.
+    const rescued = new Set(req.page.rescuedProps ?? [])
+    const missing = req.only.filter((path) => !hasPropAtPath(props, path) && !rescued.has(path))
     if (missing.length) {
       return {
         id: 'partial-prop-missing',
@@ -54,22 +110,96 @@ function detectPartialPropMissing(req: RequestRecord): Diagnostic | null {
   return null
 }
 
-function detectErrorsFiltered(req: RequestRecord): Diagnostic | null {
-  if (req.only && req.only.length > 0 && !req.only.includes('errors')) {
-    const hasError = req.status === 422 || req.events.some((e) => e.name === 'inertia:error')
-    if (hasError) {
-      return {
-        id: 'errors-filtered',
-        severity: 'warning',
-        message: "Validation errors may be filtered: 'only' option doesn't include 'errors'",
-      }
-    }
+/**
+ * Partial responses merge as `{...oldProps, ...newProps}`, so errors set by a
+ * previous visit survive any partial reload whose response omits them (and
+ * preserveErrors requests keep them on purpose). Surface errors that are
+ * byte-identical to the pre-visit ones — they may well be stale.
+ */
+function detectStaleErrors(req: RequestRecord): Diagnostic | null {
+  const isPartial = Boolean(req.only?.length || req.except?.length)
+  if (!isPartial) return null
+  // Failed and discarded responses never merged — their req.page says nothing
+  // about this visit.
+  if (!propRulesApply(req)) return null
+
+  const errors = req.page?.props?.errors
+  if (!isNonEmptyObject(errors)) return null
+
+  const previousErrors = req.previousPage?.props?.errors
+  if (!previousErrors || !deepEqual(errors, previousErrors)) return null
+
+  return {
+    id: 'stale-errors',
+    severity: 'info',
+    message:
+      'Validation errors carried over from a previous visit — the partial merge preserves them; they may be stale',
   }
-  return null
+}
+
+function isNonEmptyObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0
+}
+
+/**
+ * Async responses can be discarded: shouldSetPage() returns false when a later
+ * navigation moved the app off the originating page mid-flight. setPage() then
+ * does nothing — no beforeUpdate, no navigate — but inertia:success still
+ * fires with this visit's id carrying the *current* page (page.get()).
+ * Detect that shape: an async visit whose success page shows the app somewhere
+ * other than where the visit started, with no page-update events attached.
+ */
+function isDiscardedResponse(req: RequestRecord): boolean {
+  if (req.visitOptions?.async !== true) return false
+  if (req.events.some((e) => e.name === 'inertia:beforeUpdate' || e.name === 'inertia:navigate')) return false
+
+  const success = req.events.find((e) => e.name === 'inertia:success')
+  const successPage = success?.detail.page as InertiaPage | undefined
+  if (!successPage) return false
+
+  // If the app never moved off the visit's origin, the response was applied
+  // (same-URL replace visits legitimately lack a navigate) — not discarded.
+  const prev = req.previousPage
+  if (!prev) return false
+  return successPage.component !== prev.component || normalizeUrl(successPage.url) !== normalizeUrl(prev.url)
+}
+
+function detectDiscardedResponse(req: RequestRecord): Diagnostic | null {
+  if (!isDiscardedResponse(req)) return null
+  return {
+    id: 'response-discarded',
+    severity: 'info',
+    message: 'Response discarded — a later navigation superseded this visit',
+  }
+}
+
+/**
+ * Inertia >= 3.6: a prop resolver that throws server-side can be rescued
+ * (`Inertia::defer(..., rescue: true)`), so the response omits the prop and
+ * lists it in `page.rescuedProps` — a 200 that silently lost data. Report only
+ * props THIS visit newly rescued; the list persists across visits until a
+ * partial reload re-requests them, which would otherwise re-warn forever.
+ */
+function detectRescuedProps(req: RequestRecord): Diagnostic | null {
+  if (!propRulesApply(req)) return null
+  const rescued = req.page?.rescuedProps
+  if (!Array.isArray(rescued) || rescued.length === 0) return null
+
+  const previous = new Set(req.previousPage?.rescuedProps ?? [])
+  const fresh = rescued.filter((prop) => typeof prop === 'string' && !previous.has(prop))
+  if (fresh.length === 0) return null
+
+  return {
+    id: 'prop-rescued',
+    severity: 'warning',
+    message: `'${fresh.join("', '")}' failed to resolve on the server and was rescued — the page rendered without it`,
+  }
 }
 
 function detectDeferredFailed(req: RequestRecord): Diagnostic | null {
-  if (req.type === 'deferred' && req.error) {
+  // `failed`, not `error`: a deferred group whose response merely carried
+  // validation errors loaded fine.
+  if (req.type === 'deferred' && req.failed) {
     return { id: 'deferred-failed', severity: 'error', message: 'Deferred props failed to load' }
   }
   return null
