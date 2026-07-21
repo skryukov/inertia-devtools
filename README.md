@@ -95,17 +95,17 @@ Badges appear automatically for active Inertia features:
 | ONCE          | Once props                         |
 | PREFETCH      | Prefetched request                 |
 | CACHED        | Served from the prefetch cache     |
-| POLL          | `router.poll()` traffic            |
+| POLL          | `router.poll()` traffic (3.6+)     |
 | FLASH         | Flash data present                 |
 | REMEMBER      | Remembered local state             |
 | ENCRYPTED     | Encrypted history                  |
 | CLEAR HISTORY | History cleared on this page       |
 
-Each badge links to the relevant documentation page.
+Each badge links to the relevant documentation page. POLL needs the `poll` flag Inertia only sets from 3.6 — on 3.4/3.5 poll ticks are indistinguishable from ordinary reloads and are listed as such.
 
 ### Request Filtering
 
-Toggle visibility by category: visits, mutations, partial, deferred, prefetch, poll, and client-side visits.
+Toggle visibility by category: visits, mutations, partial, deferred, prefetch, poll, and client-side visits. Chips only appear for categories present in the current session, so the poll chip stays hidden on 3.4/3.5.
 
 ### Copy for AI
 
