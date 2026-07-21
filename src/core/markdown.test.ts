@@ -132,6 +132,12 @@ describe('requestToMarkdown', () => {
     expect(md).toContain('The name field is required.')
   })
 
+  it('omits the section for falsy error values', () => {
+    for (const error of ['', 0, false, null, undefined]) {
+      expect(requestToMarkdown(makeRequest({ error }))).not.toContain('### Error')
+    }
+  })
+
   it('omits the section for an empty error bag', () => {
     // Laravel/Rails adapters share `errors` on every page, empty or not.
     expect(requestToMarkdown(makeRequest({ error: {} }))).not.toContain('Validation Errors')

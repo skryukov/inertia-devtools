@@ -46,7 +46,9 @@ export function requestToMarkdown(request: RequestRecord): string {
  */
 function formatError(request: RequestRecord): string | null {
   const { error } = request
-  if (error === undefined || error === null) return null
+  // Falsy carries no information: an empty string or 0 would render an empty
+  // Error block. Matches the truthiness guard this replaced.
+  if (!error) return null
 
   if (!request.failed && typeof error === 'object' && !(error instanceof Error)) {
     const json = safeJson(error)
