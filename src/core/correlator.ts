@@ -284,9 +284,42 @@ export class Correlator {
     }
 
     this.insertRecord(record)
-    if (uuid) this.uuidMap.set(uuid, visitId)
+    if (uuid) {
+      this.finalizeSupersededVisit(uuid, url, timestamp)
+      this.uuidMap.set(uuid, visitId)
+    }
 
     return record
+  }
+
+  /**
+   * Inertia reuses a visit id when it follows an `x-inertia-redirect`:
+   * `handleNonInertiaResponse` calls `router.visit(target, {...requestParams.all()})`,
+   * and `getPendingVisit` spreads those options AFTER `id: createVisitId()`, so
+   * the original id wins (3.4.0 dist:3452-3459). Two records then claim one uuid.
+   *
+   * Left alone the first record never finishes: its `finish` is routed to the
+   * second, `resolveInFlight` keeps handing it every id-less event (progress,
+   * httpException, networkError, flash), and `evictOldest` *prefers* finished
+   * records, so the zombie outlives everything while its `events` array grows.
+   *
+   * Finalizing it here is also the truthful reading — the server did redirect
+   * that request — so the row reads as a redirect instead of hanging in flight.
+   */
+  private finalizeSupersededVisit(uuid: string, nextUrl: string, timestamp: number): void {
+    const previousId = this.uuidMap.get(uuid)
+    if (previousId === undefined) return
+    const previous = this.records.get(previousId)
+    if (!previous || previous.finishedAt != null) return
+
+    previous.finishedAt = timestamp
+    previous.duration = timestamp - previous.startedAt
+    previous.completed = true
+    if (!previous.page) {
+      previous.type = 'redirect'
+      previous.redirectUrl ??= nextUrl
+    }
+    previous.diagnostics = computeDiagnostics(previous)
   }
 
   private handleStart(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
@@ -838,7 +871,12 @@ export class Correlator {
     if (!visit) return '(unknown)'
     const url = visit.url
     if (url instanceof URL) return url.pathname + url.search
-    if (typeof url === 'string') return url
+    // Inertia hands us a URL instance, but events reach the correlator through
+    // the store, whose safeClone has already stringified it to an ABSOLUTE url.
+    // So this is the branch production actually takes — normalizing it keeps
+    // `url` in the same shape as `redirectUrl` and as the URL-object branch,
+    // instead of the two sitting side by side in different formats.
+    if (typeof url === 'string') return normalizeUrl(url)
     return '(unknown)'
   }
 

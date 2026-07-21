@@ -1145,6 +1145,73 @@ describe('Correlator', () => {
     })
   })
 
+  describe('reused visit id (x-inertia-redirect)', () => {
+    // Inertia follows a 409 + x-inertia-redirect by calling router.visit with
+    // `...requestParams.all()`, which still carries the original `id` — and
+    // getPendingVisit spreads those options after `id: createVisitId()`, so the
+    // old id wins. Two visits, one uuid.
+    const REUSED = 'visit-reused'
+
+    function redirectSequence(target: Correlator) {
+      target.processEvent(
+        makeEvent(
+          'inertia:before',
+          {
+            visit: makeVisitObject({ id: REUSED, method: 'post', url: new URL('http://localhost/posts') }),
+          },
+          100,
+        ),
+      )
+      target.processEvent(makeEvent('inertia:start', { visit: makeVisitObject({ id: REUSED, method: 'post' }) }, 110))
+      // The redirect follow-up reuses the id.
+      target.processEvent(
+        makeEvent(
+          'inertia:before',
+          {
+            visit: makeVisitObject({ id: REUSED, method: 'get', url: new URL('http://localhost/posts') }),
+          },
+          200,
+        ),
+      )
+      target.processEvent(makeEvent('inertia:start', { visit: makeVisitObject({ id: REUSED, method: 'get' }) }, 210))
+      target.processEvent(makeEvent('inertia:finish', { visit: makeVisitObject({ id: REUSED }) }, 260))
+    }
+
+    it('leaves no record stuck in flight', () => {
+      redirectSequence(correlator)
+      const unfinished = correlator.getRequests().filter((r) => r.finishedAt == null)
+      expect(unfinished).toEqual([])
+    })
+
+    it('reports the superseded request as a redirect rather than a phantom', () => {
+      redirectSequence(correlator)
+      const first = correlator.getRequests().find((r) => r.method === 'POST')!
+      expect(first.type).toBe('redirect')
+      expect(first.redirectUrl).toBe('/posts')
+      expect(first.completed).toBe(true)
+    })
+
+    it('stops the zombie from absorbing later id-less events', () => {
+      redirectSequence(correlator)
+      // An id-less failure from some *later* traffic must not land on the
+      // superseded record via the in-flight fallback.
+      const before = correlator.getRequests().find((r) => r.method === 'POST')!.events.length
+      correlator.processEvent(makeEvent('inertia:networkError', { error: 'boom' }, 300))
+      const after = correlator.getRequests().find((r) => r.method === 'POST')!
+      expect(after.events.length).toBe(before)
+      expect(after.failed).toBeUndefined()
+    })
+
+    it('lets the superseded record be evicted like any finished one', () => {
+      const small = new Correlator(2)
+      redirectSequence(small)
+      for (let i = 0; i < 3; i++) {
+        correlator.processEvent(makeEvent('inertia:before', { visit: makeVisitObject({ id: `later-${i}` }) }, 400 + i))
+      }
+      expect(small.getRequests().length).toBeLessThanOrEqual(2)
+    })
+  })
+
   describe('record eviction', () => {
     it('evicts oldest completed record when over capacity', () => {
       const smallCorrelator = new Correlator(3)

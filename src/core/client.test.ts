@@ -147,7 +147,8 @@ describe('createInRealmClient', () => {
       client.replayVisit(client.getState().requests[0].visitId)
 
       expect(router.visit).toHaveBeenCalledTimes(1)
-      expect(router.visit).toHaveBeenCalledWith('http://localhost/replay', expect.objectContaining({ method: 'get' }))
+      // Path, not the absolute url — see the store -> correlator seam tests.
+      expect(router.visit).toHaveBeenCalledWith('/replay', expect.objectContaining({ method: 'get' }))
     })
 
     it('reload() proxies to the store, which drives the router', () => {

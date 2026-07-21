@@ -314,7 +314,10 @@ describe('DevToolsStore', () => {
       actingStore.replayVisit(actingStore.requests[0].visitId)
 
       expect(router.visit).toHaveBeenCalledTimes(1)
-      expect(router.visit).toHaveBeenCalledWith('http://localhost/users', {
+      // Path, not the absolute url this used to assert: `record.url` now keeps
+      // the same shape Inertia itself uses, so a replayed visit is indistinguishable
+      // from the original.
+      expect(router.visit).toHaveBeenCalledWith('/users', {
         method: 'get',
         only: ['users'],
         except: ['stats'],
@@ -380,6 +383,48 @@ describe('DevToolsStore', () => {
       expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('Replay failed'))).toBe(true)
       expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('Reload failed'))).toBe(true)
       warnSpy.mockRestore()
+    })
+  })
+
+  describe('store -> correlator seam', () => {
+    // Every correlator test hands `processEvent` a hand-built CapturedEvent,
+    // so none of them sees what the store actually produces. safeClone
+    // stringifies visit.url to an ABSOLUTE url before the correlator ever
+    // looks at it, which is why `record.url` was "http://localhost/users" in
+    // production while 108 correlator tests asserted "/users".
+    it('records a path-shaped url even though the store stringifies the URL object', () => {
+      store.captureEvent(
+        'inertia:before',
+        makeCustomEvent('inertia:before', {
+          visit: { id: 'v-seam', method: 'get', url: new URL('http://localhost/users?page=2'), only: [], except: [] },
+        }),
+      )
+      const record = store.getState().requests.at(-1)!
+      expect(record.url).toBe('/users?page=2')
+      expect(record.url).not.toContain('http://')
+    })
+
+    it('masks credentials the visit detail carried into the raw events', () => {
+      store.captureEvent(
+        'inertia:before',
+        makeCustomEvent('inertia:before', {
+          visit: {
+            id: 'v-secret',
+            method: 'post',
+            url: new URL('http://localhost/login'),
+            only: [],
+            except: [],
+            data: { email: 'ada@example.com', password: 'hunter2' },
+            headers: { Authorization: 'Bearer JWT', 'X-Inertia': 'true' },
+          },
+        }),
+      )
+      const serialized = JSON.stringify(store.getState().requests.at(-1))
+      expect(serialized).not.toContain('hunter2')
+      expect(serialized).not.toContain('Bearer JWT')
+      // Non-sensitive fields survive so the record stays debuggable.
+      expect(serialized).toContain('ada@example.com')
+      expect(serialized).toContain('X-Inertia')
     })
   })
 
