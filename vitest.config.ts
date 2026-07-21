@@ -18,13 +18,20 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['src/**/*.test.ts'],
+    // `*.test.svelte.ts` is not redundant with `*.test.ts`: Svelte 5 compiles
+    // runes ONLY in files whose name ends `.svelte.ts`, so a test that drives
+    // `$state`/`$derived` must be named that way — and the bare `*.test.ts`
+    // pattern does not match it. The two facts together made a reactive-state
+    // test literally uncollectable: name it for the compiler and vitest ignored
+    // it, name it for vitest and `$state is not defined`.
+    include: ['src/**/*.test.ts', 'src/**/*.test.svelte.ts'],
     environment: 'jsdom',
+    setupFiles: ['src/test-setup.ts'],
     coverage: {
       // Was scoped to src/core, which reported ~96% while the project overall
       // sat near 32% — the tooling hid the untested half from itself.
       include: ['src/**/*.{ts,svelte}'],
-      exclude: ['**/*.test.ts', '**/*.d.ts'],
+      exclude: ['**/*.test.ts', '**/*.test.svelte.ts', '**/*.d.ts', 'src/test-setup.ts'],
     },
   },
 })

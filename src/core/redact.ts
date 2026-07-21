@@ -79,19 +79,34 @@ export function redactExport<T>(value: T): T {
   return walkForExport(value, new WeakSet()) as T
 }
 
+/**
+ * `seen` tracks the current PATH, not every object ever visited — so it is
+ * cleaned up on the way back out.
+ *
+ * Leaving entries in permanently turned the cycle guard into a
+ * shared-reference guard: `{ author: user, editor: user }` exported the second
+ * one as `[Circular]` even though nothing is cyclic. Aliasing like that is
+ * ordinary in Inertia props (the same user object shared across props, a lookup
+ * table referenced from several rows), so the export silently lost real data
+ * and blamed a cycle that was not there.
+ */
 function walkForExport(value: unknown, seen: WeakSet<object>): unknown {
   if (value === null || typeof value !== 'object') return value
   if (seen.has(value)) return '[Circular]'
+  if (!Array.isArray(value) && !isWalkable(value)) return value
+
   seen.add(value)
+  try {
+    if (Array.isArray(value)) return value.map((entry) => walkForExport(entry, seen))
 
-  if (Array.isArray(value)) return value.map((entry) => walkForExport(entry, seen))
-  if (!isWalkable(value)) return value
-
-  const out: Record<string, unknown> = {}
-  for (const [key, entry] of Object.entries(value)) {
-    out[key] = isSensitiveKey(key) ? REDACTED : walkForExport(entry, seen)
+    const out: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = isSensitiveKey(key) ? REDACTED : walkForExport(entry, seen)
+    }
+    return out
+  } finally {
+    seen.delete(value)
   }
-  return out
 }
 
 /**

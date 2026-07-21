@@ -27,10 +27,18 @@ const rules: DiagnosticRule[] = [
   detectHistoryReplace,
 ]
 
+/** Case-insensitive header lookup — capture preserves whatever casing the wire used. */
+function responseHeader(req: RequestRecord, name: string): string | undefined {
+  const headers = req.wire?.response?.headers
+  if (!headers) return undefined
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name) return typeof value === 'string' ? value : undefined
+  }
+  return undefined
+}
+
 function detectVersionMismatch(req: RequestRecord): Diagnostic | null {
-  // Inertia >= 3.6 fires inertia:location with the redirect reason. On
-  // 3.4/3.5 only the 409 response exists, so version mismatch and
-  // inertia_location redirects are indistinguishable — assume the former.
+  // Inertia >= 3.6 fires inertia:location with the redirect reason.
   const location = req.events.find((e) => e.name === 'inertia:location')
   if (location) {
     if (location.detail.versionChange === true) {
@@ -38,15 +46,38 @@ function detectVersionMismatch(req: RequestRecord): Diagnostic | null {
     }
     return { id: 'server-redirect', severity: 'info', message: 'Server redirect via inertia_location' }
   }
-  if (req.type === 'redirect' && req.status === 409) {
+
+  if (req.status !== 409) return null
+
+  // A 409 is NOT automatically a version mismatch. The protocol overloads it
+  // for three different things, and the response header says which — telling a
+  // developer their asset version is stale when they actually called
+  // `Inertia::location()` sends them to debug a bug they do not have.
+  //
+  // `x-inertia-redirect` is the worst of the three to get wrong: Inertia
+  // follows it with `router.visit` (core dist:2485-2489), so no full page
+  // reload happens at all and the old message asserted one did.
+  if (responseHeader(req, 'x-inertia-redirect')) {
+    return {
+      id: 'server-redirect',
+      severity: 'info',
+      message: 'Server redirect — Inertia followed it client-side, no page reload',
+    }
+  }
+  if (responseHeader(req, 'x-inertia-location')) {
+    return { id: 'server-redirect', severity: 'info', message: 'Server redirect via inertia_location' }
+  }
+
+  // Headers were captured and neither redirect header is present: by the
+  // protocol that leaves version mismatch, so assert it.
+  if (req.wire?.response?.headers) {
     return { id: 'version-mismatch', severity: 'warning', message: 'Version mismatch — full page reload' }
   }
-  // 409 known only from Resource Timing (Inertia 3.4/3.5 fires no event for
-  // location 409s): report the forced reload without guessing the cause.
-  if (req.status === 409) {
-    return { id: 'forced-reload', severity: 'warning', message: '409 Conflict — server forced a full page reload' }
-  }
-  return null
+
+  // No headers at all — the 409 is known only from Resource Timing (interceptors
+  // unavailable, or Inertia 3.4/3.5 firing no event for location 409s). Report
+  // the reload without guessing which of the three causes it was.
+  return { id: 'forced-reload', severity: 'warning', message: '409 Conflict — server forced a full page reload' }
 }
 
 function detectCancelledVisit(req: RequestRecord): Diagnostic | null {
@@ -80,13 +111,21 @@ function hasPropAtPath(props: Record<string, unknown>, path: string): boolean {
 }
 
 /**
- * A failed or discarded request says nothing about the server's prop shape.
- * Keyed off `failed`, not `error` — `error` also holds validation errors, and
- * those responses merged normally (guarding on them would silence the very
+ * A failed, cancelled or discarded request says nothing about the server's prop
+ * shape. Keyed off `failed`, not `error` — `error` also holds validation errors,
+ * and those responses merged normally (guarding on them would silence the very
  * rules that inspect merged errors).
+ *
+ * `cancelled`/`interrupted` are in here because the correlator back-fills
+ * `record.page` from `lastPage` for deferred records that never got one. That
+ * is right for display — the panel should show what was on screen — but it left
+ * the prop rules diffing the PRE-visit page against an `only:` list, so opening
+ * a page with `Inertia::defer(:stats)` and clicking away within 200ms accused
+ * the server of dropping a prop it was never given time to send.
  */
 function propRulesApply(req: RequestRecord): boolean {
   if (req.failed || (req.status ?? 0) >= 400) return false
+  if (req.cancelled || req.interrupted || req.prevented) return false
   return !isDiscardedResponse(req)
 }
 

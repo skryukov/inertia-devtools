@@ -60,12 +60,46 @@ describe('computeDiagnostics', () => {
   })
 
   describe('detectVersionMismatch', () => {
-    it('detects 409 redirect as version mismatch', () => {
-      const req = makeRequest({ type: 'redirect', status: 409 })
-      const diags = computeDiagnostics(req)
+    // Wire headers are the only thing that distinguishes the three meanings of
+    // a 409, so these cases are driven through them.
+    function make409(headers?: Record<string, string>) {
+      return makeRequest({
+        type: 'redirect',
+        status: 409,
+        wire: headers ? { response: { status: 409, headers, timestamp: 100 } } : undefined,
+      } as Partial<RequestRecord>)
+    }
+
+    it('asserts version mismatch only when headers rule the alternatives out', () => {
+      const diags = computeDiagnostics(make409({ 'x-inertia-version': 'abc' }))
       expect(diags).toHaveLength(1)
       expect(diags[0].id).toBe('version-mismatch')
       expect(diags[0].severity).toBe('warning')
+    })
+
+    it('hedges when the 409 is known only from timing', () => {
+      // No interceptors, so no headers: the cause is genuinely unknown and
+      // claiming "version mismatch" sends the developer after a bug they do
+      // not have.
+      const diags = computeDiagnostics(make409())
+      expect(diags.find((d) => d.id === 'version-mismatch')).toBeUndefined()
+      expect(diags.find((d) => d.id === 'forced-reload')).toBeDefined()
+    })
+
+    it('does not claim a reload for x-inertia-redirect — Inertia follows it client-side', () => {
+      const diags = computeDiagnostics(make409({ 'x-inertia-redirect': '/dashboard' }))
+      const diag = diags.find((d) => d.id === 'server-redirect')
+      expect(diag).toBeDefined()
+      expect(diag!.severity).toBe('info')
+      expect(diag!.message).toContain('no page reload')
+      expect(diags.find((d) => d.id === 'version-mismatch')).toBeUndefined()
+    })
+
+    it('names inertia_location rather than blaming the asset version', () => {
+      // Every Inertia::location() / OAuth / Stripe redirect on 3.4 and 3.5.
+      const diags = computeDiagnostics(make409({ 'x-inertia-location': 'https://checkout.stripe.com/x' }))
+      expect(diags.find((d) => d.id === 'server-redirect')?.message).toContain('inertia_location')
+      expect(diags.find((d) => d.id === 'version-mismatch')).toBeUndefined()
     })
 
     it('does not trigger for non-409 redirect', () => {
@@ -153,6 +187,25 @@ describe('computeDiagnostics', () => {
       const req = makeRequest({
         only: ['users', 'roles'],
         page: makePage({ props: { users: [], roles: [] } }),
+      })
+      const diags = computeDiagnostics(req)
+      expect(diags.find((d) => d.id === 'partial-prop-missing')).toBeUndefined()
+    })
+
+    it.each([
+      ['cancelled', { cancelled: true }],
+      ['interrupted', { interrupted: true }],
+      ['prevented', { prevented: true }],
+    ])('does not blame the server for props a %s visit never waited for', (_label, flags) => {
+      // The commonest cancel path there is: open a page with a deferred prop,
+      // click away before it lands. The correlator back-fills `page` from the
+      // PRE-visit page so the panel has something to show — which used to make
+      // the rule diff that page against the `only:` list and accuse the server
+      // of dropping a prop it was never given time to send.
+      const req = makeRequest({
+        only: ['stats'],
+        page: makePage({ props: { users: [] } }),
+        ...flags,
       })
       const diags = computeDiagnostics(req)
       expect(diags.find((d) => d.id === 'partial-prop-missing')).toBeUndefined()

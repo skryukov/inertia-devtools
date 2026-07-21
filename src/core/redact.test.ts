@@ -166,6 +166,25 @@ describe('redactExport', () => {
     expect(out).toContain('[Circular]')
   })
 
+  it('exports a shared reference twice instead of calling it a cycle', () => {
+    // The cycle guard used to mark every object it had EVER seen, not the ones
+    // on the current path — so ordinary aliasing (one user object shared across
+    // two props, a lookup table referenced from several rows) exported as
+    // '[Circular]' and the data was silently lost.
+    const user = { name: 'Ada', email: 'ada@example.com' }
+    const out = redactExport({ author: user, editor: user })
+
+    expect(out).toEqual({ author: user, editor: user })
+    expect(JSON.stringify(out)).not.toContain('[Circular]')
+  })
+
+  it('still redacts through the second path to a shared object', () => {
+    const creds = { api_key: 'LEAK', label: 'primary' }
+    const out = JSON.stringify(redactExport({ a: creds, b: creds }))
+    expect(out).not.toContain('LEAK')
+    expect(out.match(/\[REDACTED\]/g)).toHaveLength(2)
+  })
+
   it('keeps the structure and the harmless values', () => {
     expect(redactExport({ users: [{ name: 'Ada' }], csrf_token: 'LEAK' })).toEqual({
       users: [{ name: 'Ada' }],
