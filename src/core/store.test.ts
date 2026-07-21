@@ -63,6 +63,19 @@ describe('DevToolsStore', () => {
       // Should not throw
       expect(store.getState().requests).toHaveLength(0)
     })
+
+    it('finalizes a prevented inertia:before as a prevented record', () => {
+      const visit = { id: 'v-prev', method: 'get', url: new URL('http://localhost/danger'), only: [], except: [] }
+      const event = new CustomEvent('inertia:before', { cancelable: true, detail: { visit } })
+      event.preventDefault()
+
+      store.captureEvent('inertia:before', event)
+
+      const [record] = store.getState().requests
+      expect(record.prevented).toBe(true)
+      expect(record.completed).toBe(false)
+      expect(record.finishedAt).toBe(record.startedAt)
+    })
   })
 
   describe('legacy Inertia warning', () => {
@@ -73,7 +86,7 @@ describe('DevToolsStore', () => {
       store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: legacyVisit }))
       store.captureEvent('inertia:start', makeCustomEvent('inertia:start', { visit: legacyVisit }))
 
-      const legacyWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('requires Inertia >= 3.4'))
+      const legacyWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('carry no visit id'))
       expect(legacyWarnings).toHaveLength(1)
       warnSpy.mockRestore()
     })
@@ -84,7 +97,7 @@ describe('DevToolsStore', () => {
       const visit = { id: 'v-1', method: 'get', url: new URL('http://localhost/a'), only: [], except: [] }
       store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit }))
 
-      const legacyWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('requires Inertia >= 3.4'))
+      const legacyWarnings = warnSpy.mock.calls.filter((c) => String(c[0]).includes('carry no visit id'))
       expect(legacyWarnings).toHaveLength(0)
       warnSpy.mockRestore()
     })
@@ -122,7 +135,7 @@ describe('DevToolsStore', () => {
       store.captureEvent(
         'inertia:before',
         makeCustomEvent('inertia:before', {
-          visit: { method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
+          visit: { id: 'v-t1', method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
         }),
       )
 
@@ -139,7 +152,7 @@ describe('DevToolsStore', () => {
       store.captureEvent(
         'inertia:before',
         makeCustomEvent('inertia:before', {
-          visit: { method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
+          visit: { id: 'v-t2', method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
         }),
       )
 
@@ -149,7 +162,7 @@ describe('DevToolsStore', () => {
       store.captureEvent(
         'inertia:before',
         makeCustomEvent('inertia:before', {
-          visit: { method: 'get', url: new URL('http://localhost/test2'), only: [], except: [] },
+          visit: { id: 'v-t3', method: 'get', url: new URL('http://localhost/test2'), only: [], except: [] },
         }),
       )
 
@@ -166,7 +179,7 @@ describe('DevToolsStore', () => {
         store.captureEvent(
           'inertia:before',
           makeCustomEvent('inertia:before', {
-            visit: { method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
+            visit: { id: 'v-t4', method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
           }),
         )
       }).not.toThrow()
@@ -178,7 +191,7 @@ describe('DevToolsStore', () => {
       store.captureEvent(
         'inertia:before',
         makeCustomEvent('inertia:before', {
-          visit: { method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
+          visit: { id: 'v-t5', method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
         }),
       )
 
@@ -204,7 +217,7 @@ describe('DevToolsStore', () => {
       store.captureEvent(
         'inertia:before',
         makeCustomEvent('inertia:before', {
-          visit: { method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
+          visit: { id: 'v-t6', method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
         }),
       )
 
@@ -228,7 +241,7 @@ describe('DevToolsStore', () => {
       store.captureEvent(
         'inertia:before',
         makeCustomEvent('inertia:before', {
-          visit: { method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
+          visit: { id: 'v-t7', method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
         }),
       )
 
@@ -247,10 +260,151 @@ describe('DevToolsStore', () => {
       store.captureEvent(
         'inertia:before',
         makeCustomEvent('inertia:before', {
-          visit: { method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
+          visit: { id: 'v-t8', method: 'get', url: new URL('http://localhost/test'), only: [], except: [] },
         }),
       )
       expect(store.evictedCount).toBe(0)
+    })
+  })
+
+  describe('deep page props', () => {
+    it('captures page props beyond the clone depth cap intact', () => {
+      // 14 levels deep — past MAX_CLONE_DEPTH; page objects use structuredClone
+      let deep: Record<string, unknown> = { leaf: 'value' }
+      for (let i = 0; i < 14; i++) deep = { nested: deep }
+
+      store.captureEvent(
+        'inertia:navigate',
+        makeCustomEvent('inertia:navigate', {
+          page: { component: 'Deep', url: '/deep', version: '1', props: deep, flash: {} },
+          visitId: 'v-deep',
+        }),
+      )
+
+      let node: unknown = store.requests[0].page!.props
+      for (let i = 0; i < 14; i++) node = (node as Record<string, unknown>).nested
+      expect((node as Record<string, unknown>).leaf).toBe('value')
+    })
+  })
+
+  describe('router actions', () => {
+    function makeRouter() {
+      return { visit: vi.fn(), reload: vi.fn() }
+    }
+
+    function captureVisit(target: DevToolsStore, method: string, extra: Record<string, unknown> = {}) {
+      target.captureEvent(
+        'inertia:before',
+        makeCustomEvent('inertia:before', {
+          visit: { id: `v-${method}`, method, url: new URL('http://localhost/users'), only: [], except: [], ...extra },
+        }),
+      )
+    }
+
+    it('canAct is true only when a router was provided', () => {
+      expect(store.canAct).toBe(false)
+      expect(new DevToolsStore({ router: makeRouter() }).canAct).toBe(true)
+    })
+
+    it('replayVisit re-issues a GET record with url/only/except', () => {
+      const router = makeRouter()
+      const actingStore = new DevToolsStore({ router })
+      captureVisit(actingStore, 'get', { only: ['users'], except: ['stats'] })
+
+      actingStore.replayVisit(actingStore.requests[0].visitId)
+
+      expect(router.visit).toHaveBeenCalledTimes(1)
+      expect(router.visit).toHaveBeenCalledWith('http://localhost/users', {
+        method: 'get',
+        only: ['users'],
+        except: ['stats'],
+        headers: undefined,
+      })
+    })
+
+    it('replayVisit refuses non-GET records', () => {
+      const router = makeRouter()
+      const actingStore = new DevToolsStore({ router })
+      captureVisit(actingStore, 'post')
+
+      actingStore.replayVisit(actingStore.requests[0].visitId)
+
+      expect(router.visit).not.toHaveBeenCalled()
+    })
+
+    it('replayVisit ignores unknown visitIds', () => {
+      const router = makeRouter()
+      const actingStore = new DevToolsStore({ router })
+
+      actingStore.replayVisit(999)
+
+      expect(router.visit).not.toHaveBeenCalled()
+    })
+
+    it('reload delegates to the router', () => {
+      const router = makeRouter()
+      const actingStore = new DevToolsStore({ router })
+
+      actingStore.reload()
+
+      expect(router.reload).toHaveBeenCalledTimes(1)
+      expect(router.reload).toHaveBeenCalledWith({})
+    })
+
+    it('no-ops without a router', () => {
+      captureVisit(store, 'get')
+
+      expect(() => {
+        store.replayVisit(store.requests[0].visitId)
+        store.reload()
+      }).not.toThrow()
+    })
+
+    it('never lets a throwing router crash the host', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const router = {
+        visit: vi.fn(() => {
+          throw new Error('visit crash')
+        }),
+        reload: vi.fn(() => {
+          throw new Error('reload crash')
+        }),
+      }
+      const actingStore = new DevToolsStore({ router })
+      captureVisit(actingStore, 'get')
+
+      expect(() => {
+        actingStore.replayVisit(actingStore.requests[0].visitId)
+        actingStore.reload()
+      }).not.toThrow()
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('Replay failed'))).toBe(true)
+      expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('Reload failed'))).toBe(true)
+      warnSpy.mockRestore()
+    })
+  })
+
+  describe('flushPendingSave', () => {
+    it('saves the session immediately instead of waiting for the debounce', () => {
+      sessionStorage.clear()
+      store.captureEvent(
+        'inertia:before',
+        makeCustomEvent('inertia:before', {
+          visit: { id: 'v-flush', method: 'get', url: new URL('http://localhost/users'), only: [], except: [] },
+        }),
+      )
+      // Debounced save has not fired yet
+      expect(sessionStorage.getItem('inertia-devtools-session')).toBeNull()
+
+      store.flushPendingSave()
+      const raw = sessionStorage.getItem('inertia-devtools-session')
+      expect(raw).not.toBeNull()
+      expect(JSON.parse(raw!).requests).toHaveLength(1)
+    })
+
+    it('is a no-op when no save is pending', () => {
+      sessionStorage.clear()
+      store.flushPendingSave()
+      expect(sessionStorage.getItem('inertia-devtools-session')).toBeNull()
     })
   })
 })

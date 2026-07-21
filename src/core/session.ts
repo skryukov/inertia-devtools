@@ -1,5 +1,5 @@
 import type { RequestRecord, SessionSnapshot, SessionRequestSummary } from './types'
-import { isNonEmptyRecord } from '../ui/shared/storage'
+import { isNonEmptyRecord } from './utils'
 
 const SESSION_KEY = 'inertia-devtools-session'
 const MAX_AGE_MS = 5 * 60 * 1000 // 5 minutes
@@ -19,6 +19,8 @@ export function summarizeRequest(req: RequestRecord): SessionRequestSummary {
     completed: req.completed,
     cancelled: req.cancelled,
     interrupted: req.interrupted,
+    prevented: req.prevented,
+    initial: req.initial,
     only: req.only,
     except: req.except,
     redirectUrl: req.redirectUrl,

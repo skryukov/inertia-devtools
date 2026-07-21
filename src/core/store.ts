@@ -14,6 +14,7 @@ import type {
 } from './types'
 import type { NetworkTiming } from './network'
 import { saveSession, loadSession, clearSession } from './session'
+import { TOO_DEEP } from './utils'
 
 const MAX_CLONE_DEPTH = 10
 
@@ -75,6 +76,11 @@ export class DevToolsStore {
     return this.previousSession?.requests ?? []
   }
 
+  /** Router actions (replay/reload) are available — a router was provided. */
+  get canAct(): boolean {
+    return this.options.router != null
+  }
+
   getState(): DevToolsState {
     return {
       requests: this.requests,
@@ -99,9 +105,11 @@ export class DevToolsStore {
 
   /**
    * Capture a DOM event (inertia:*).
-   * Called by capture.ts event handlers.
+   * Called by capture.ts event handlers, one microtask after dispatch — the
+   * timestamp is passed in from capture time, and defaultPrevented is final
+   * here because every document listener has already run.
    */
-  captureEvent(name: InertiaEventName, event: Event): void {
+  captureEvent(name: InertiaEventName, event: Event, timestamp = performance.now()): void {
     if (!(event instanceof CustomEvent)) return
     const rawDetail = event.detail
     const detail = this.safeSerializeDetail(rawDetail)
@@ -111,8 +119,11 @@ export class DevToolsStore {
     const captured: CapturedEvent = {
       id: this.nextEventId++,
       name,
-      timestamp: performance.now(),
+      timestamp,
       detail,
+    }
+    if (name === 'inertia:before' && event.defaultPrevented) {
+      captured.prevented = true
     }
 
     this.correlator.processEvent(captured)
@@ -172,6 +183,53 @@ export class DevToolsStore {
     this.notify()
   }
 
+  /**
+   * Re-issue a captured visit through the app's router. GET only — replaying
+   * a mutation would re-submit it, so non-GET records are silently refused
+   * (the UI gates too; this guard is the safety net). No-ops without a
+   * router or a matching record.
+   */
+  replayVisit(visitId: number): void {
+    const router = this.options.router
+    if (!router) return
+    const record = this.correlator.getRequest(visitId)
+    if (!record) return
+    if (record.method.toUpperCase() !== 'GET') return
+    try {
+      router.visit(record.url, {
+        method: record.method.toLowerCase(),
+        only: record.only,
+        except: record.except,
+        headers: undefined,
+      })
+    } catch (e) {
+      console.warn('[inertia-devtools] Replay failed:', e)
+    }
+  }
+
+  /** Reload the current page through the app's router. No-ops without a router. */
+  reload(): void {
+    const router = this.options.router
+    if (!router) return
+    try {
+      router.reload({})
+    } catch (e) {
+      console.warn('[inertia-devtools] Reload failed:', e)
+    }
+  }
+
+  /**
+   * Flush the debounced session save immediately. Called on pagehide —
+   * a 409/inertia:location hard reload lands inside the debounce window,
+   * which would otherwise lose exactly the record that explains the reload.
+   */
+  flushPendingSave(): void {
+    if (this.saveTimer === undefined) return
+    clearTimeout(this.saveTimer)
+    this.saveTimer = undefined
+    saveSession(this.requests)
+  }
+
   // --- Internal ---
 
   /**
@@ -187,8 +245,9 @@ export class DevToolsStore {
 
     this.legacyInertiaWarned = true
     console.warn(
-      '[inertia-devtools] Inertia events carry no visit id — this version requires Inertia >= 3.4. ' +
-        'For Inertia v2 / v3.0–3.3, use inertia-devtools@0.1 instead.',
+      '[inertia-devtools] Inertia events carry no visit id — request correlation will be unreliable. ' +
+        'This version supports Inertia >= 3.4 (for v2 / v3.0–3.3 use inertia-devtools@0.1); ' +
+        'on a newer Inertia, check for an inertia-devtools update.',
     )
   }
 
@@ -218,6 +277,18 @@ export class DevToolsStore {
     try {
       const result: Record<string, unknown> = {}
       for (const [key, value] of Object.entries(detail as Record<string, unknown>)) {
+        // Page objects are server JSON (acyclic, no functions): native
+        // structuredClone copies them at full depth and is cheaper than the
+        // recursive walk — this runs synchronously at navigation commit, and
+        // the depth cap would otherwise truncate deep props (see TOO_DEEP).
+        if (key === 'page' && value != null && typeof value === 'object') {
+          try {
+            result[key] = structuredClone(value)
+            continue
+          } catch {
+            // Non-cloneable value snuck in — fall through to the safe walk
+          }
+        }
         result[key] = this.safeClone(value)
       }
       return result
@@ -229,7 +300,7 @@ export class DevToolsStore {
   private safeClone(value: unknown, depth = MAX_CLONE_DEPTH): unknown {
     if (value == null || typeof value !== 'object') return value
 
-    if (depth <= 0) return '[too deep]'
+    if (depth <= 0) return TOO_DEEP
 
     // URL objects
     if (value instanceof URL) return value.toString()
