@@ -72,6 +72,12 @@ export interface RequestRecord {
   page?: InertiaPage
   previousPage?: InertiaPage
   events: CapturedEvent[]
+  /**
+   * Events dropped once `events` hit its cap. Progress events go first — the
+   * Events tab already groups them — so the structural timeline survives.
+   * Undefined means nothing was dropped.
+   */
+  droppedEvents?: number
   features: ActiveFeature[]
   cancelled: boolean
   interrupted: boolean

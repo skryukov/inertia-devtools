@@ -1212,6 +1212,49 @@ describe('Correlator', () => {
     })
   })
 
+  describe('event cap and uuid unlink', () => {
+    it('bounds the events array on a record that never finishes', () => {
+      // Any id-less event resolves to the newest in-flight record, so a hung
+      // visit accumulated forever — 5,001 entries after 5,000 progress ticks.
+      correlator.processEvent(makeEvent('inertia:before', { visit: makeVisitObject({ id: 'stuck' }) }, 1))
+      correlator.processEvent(makeEvent('inertia:start', { visit: makeVisitObject({ id: 'stuck' }) }, 2))
+      for (let i = 0; i < 2000; i++) {
+        correlator.processEvent(makeEvent('inertia:progress', { percentage: i % 100 }, 10 + i))
+      }
+      const record = correlator.getRequests().find((r) => r.inertiaVisitId === 'stuck')!
+      expect(record.events.length).toBeLessThanOrEqual(500)
+      expect(record.droppedEvents).toBeGreaterThan(0)
+    })
+
+    it('keeps the structural events and drops progress first', () => {
+      correlator.processEvent(makeEvent('inertia:before', { visit: makeVisitObject({ id: 'keep' }) }, 1))
+      correlator.processEvent(makeEvent('inertia:start', { visit: makeVisitObject({ id: 'keep' }) }, 2))
+      for (let i = 0; i < 1000; i++) {
+        correlator.processEvent(makeEvent('inertia:progress', {}, 10 + i))
+      }
+      const record = correlator.getRequests().find((r) => r.inertiaVisitId === 'keep')!
+      const names = record.events.map((e) => e.name)
+      expect(names).toContain('inertia:before')
+      expect(names).toContain('inertia:start')
+    })
+
+    it('does not orphan a live record when evicting an older one that shares its uuid', () => {
+      // After an x-inertia-redirect two records share a uuid and the map points
+      // at the newer. Evicting the older used to delete that mapping, so the
+      // live record's own finish resolved to nothing.
+      const small = new Correlator(2)
+      const SHARED = 'shared-uuid'
+      small.processEvent(makeEvent('inertia:before', { visit: makeVisitObject({ id: SHARED, method: 'post' }) }, 1))
+      small.processEvent(makeEvent('inertia:before', { visit: makeVisitObject({ id: SHARED, method: 'get' }) }, 2))
+      // Push the older (now finalized) record out of the buffer.
+      small.processEvent(makeEvent('inertia:before', { visit: makeVisitObject({ id: 'other' }) }, 3))
+
+      const finished = small.processEvent(makeEvent('inertia:finish', { visit: makeVisitObject({ id: SHARED }) }, 4))
+      expect(finished).not.toBeNull()
+      expect(finished!.method).toBe('GET')
+    })
+  })
+
   describe('record eviction', () => {
     it('evicts oldest completed record when over capacity', () => {
       const smallCorrelator = new Correlator(3)

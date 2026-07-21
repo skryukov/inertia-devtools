@@ -16,7 +16,9 @@
   // svelte-ignore state_referenced_locally
   const ctx = sharedCtx ?? createDevToolsContext(client, { styleNonce })
 
-  let rootEl: HTMLDivElement
+  // $state so the effects that read it re-run if bind:this ever lands late;
+  // the keyboard handler now depends on it to scope arrow keys to the panel.
+  let rootEl = $state<HTMLDivElement | undefined>()
 
   // Sync resolved theme to the style scope root: the shadow host element
   // (docked, `:host([data-theme])`) or the popup's <html> (`:root[data-theme]`)
@@ -33,7 +35,13 @@
    * ARIA widgets that own their arrow keys (listbox/menu/tree/grid...).
    */
   function targetOwnsKeys(e: KeyboardEvent): boolean {
-    const el = e.target as HTMLElement | null
+    // composedPath()[0], not e.target: the listener is on the document, and
+    // anything inside a shadow root — including the devtools' own Filter and
+    // Search boxes, and any web-component input in the host app (Shoelace,
+    // Lit, Ionic) — is retargeted to the shadow host before it reaches us.
+    // Reading e.target there sees a DIV, decides nobody owns the keys, and
+    // preventDefault()s arrow keys while the user is typing.
+    const el = (e.composedPath?.()[0] ?? e.target) as HTMLElement | null
     if (!el) return false
     const tag = el.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
@@ -45,6 +53,16 @@
     )
       return true
     return false
+  }
+
+  /** Did this event originate inside the devtools UI (shadow root or PiP window)? */
+  function eventIsInsideDevtools(e: KeyboardEvent): boolean {
+    if (!rootEl) return false
+    const path = e.composedPath?.()
+    if (path?.length) return path.includes(rootEl)
+    // No composedPath (very old engines): fall back to containment.
+    const el = e.target as Node | null
+    return Boolean(el && rootEl.contains(el))
   }
 
   // Global keyboard shortcuts — listen on the document owning this instance
@@ -78,8 +96,12 @@
       return
     }
 
-    // Arrow keys — navigate request list
+    // Arrow keys browse the request list — but only while the focus is inside
+    // the devtools. Swallowing them globally killed plain scroll-by-arrow-key
+    // in the user's app for as long as the panel was open, and `panelOpen`
+    // persists across reloads, so it read as "arrow keys stopped working".
     if (targetOwnsKeys(e)) return
+    if (!eventIsInsideDevtools(e)) return
 
     if (e.key === 'ArrowDown') {
       e.preventDefault()

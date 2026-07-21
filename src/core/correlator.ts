@@ -16,6 +16,9 @@ import { computeDiagnostics } from './diagnostics'
 import { normalizeUrl } from './url'
 
 const MAX_PENDING_NETWORK = 10
+/** Per-record event cap — see appendEvent. */
+const MAX_EVENTS_PER_RECORD = 500
+
 const MAX_PENDING_PREFETCH = 20
 const NETWORK_TIMING_TOLERANCE_MS = 2000
 
@@ -141,6 +144,10 @@ export class Correlator {
     record.wire = { ...record.wire, response: { ...response, headers: redactHeaders(response.headers) } }
     if (record.status === undefined && response.status !== undefined) {
       record.status = response.status
+      // Recompute: several rules key off status, so learning it late has to
+      // re-run them. Without this a 409 seen only by the interceptor produced
+      // no version-mismatch diagnostic. attachNetworkTiming already does this.
+      record.diagnostics = computeDiagnostics(record)
     }
     return record
   }
@@ -340,7 +347,7 @@ export class Correlator {
     const record = uuid ? this.resolveByUuid(uuid) : this.resolveInFlight()
     if (record) {
       if (!uuid) event.heuristic = true
-      record.events.push(event)
+      this.appendEvent(record, event)
     }
     return record
   }
@@ -352,7 +359,7 @@ export class Correlator {
     if (!record) return null
 
     if (!uuid) event.heuristic = true
-    record.events.push(event)
+    this.appendEvent(record, event)
     record.finishedAt = timestamp
     record.duration = timestamp - record.startedAt
 
@@ -452,7 +459,7 @@ export class Correlator {
 
     if (!record) return null
 
-    record.events.push(event)
+    this.appendEvent(record, event)
 
     // navigate fires with cached: true when the page was served from the
     // prefetch cache — such visits never receive start/finish.
@@ -510,7 +517,7 @@ export class Correlator {
     if (!record) return null
 
     event.heuristic = true
-    record.events.push(event)
+    this.appendEvent(record, event)
 
     // Deliberately do NOT set record.page here: attribution is a guess, and
     // with two concurrent async visits this beforeUpdate can belong to a
@@ -542,7 +549,7 @@ export class Correlator {
       existing.type = 'client'
       existing.method = method
       existing.url = page.url ?? existing.url
-      existing.events.push(event)
+      this.appendEvent(existing, event)
       existing.page = page
       existing.features = this.extractPageFeatures(page)
       existing.completed = true
@@ -586,7 +593,7 @@ export class Correlator {
     const record = this.resolveEventRecord(event, detail)
     if (!record) return null
 
-    record.events.push(event)
+    this.appendEvent(record, event)
 
     // success/error carry the post-swap page (page.get()) alongside an exact
     // visitId — an authoritative page source that overwrites anything a
@@ -789,9 +796,38 @@ export class Correlator {
     }
   }
 
+  /**
+   * Append an event, keeping the array bounded.
+   *
+   * `events` had no cap at all. Any id-less event (progress, flash,
+   * httpException, networkError, beforeUpdate) resolves to the newest in-flight
+   * record, so a visit that never finishes — a hung request, a backgrounded tab
+   * — accumulated forever: 5,001 entries after 5,000 progress ticks, each one
+   * retaining whatever its detail carried.
+   *
+   * Progress events are dropped first because the Events tab already collapses
+   * runs of them, so losing the middle of a run costs nothing the UI showed.
+   */
+  private appendEvent(record: RequestRecord, event: CapturedEvent): void {
+    record.events.push(event)
+    if (record.events.length <= MAX_EVENTS_PER_RECORD) return
+
+    const progressIndex = record.events.findIndex((e) => e.name === 'inertia:progress')
+    // Fall back to the oldest event only if there is no progress run to thin —
+    // never the one just pushed.
+    record.events.splice(progressIndex >= 0 ? progressIndex : 0, 1)
+    record.droppedEvents = (record.droppedEvents ?? 0) + 1
+  }
+
   private deleteRecord(record: RequestRecord): void {
     this.records.delete(record.visitId)
-    if (record.inertiaVisitId) this.uuidMap.delete(record.inertiaVisitId)
+    // Only unlink the uuid if it still points at THIS record. After an
+    // x-inertia-redirect two records share a uuid (Inertia reuses the id), and
+    // the map points at the newer one — deleting it while evicting the older
+    // orphaned the live record, so its own inertia:finish resolved to nothing.
+    if (record.inertiaVisitId && this.uuidMap.get(record.inertiaVisitId) === record.visitId) {
+      this.uuidMap.delete(record.inertiaVisitId)
+    }
     this._evictedCount++
   }
 
