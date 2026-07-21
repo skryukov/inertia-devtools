@@ -32,7 +32,7 @@ export default defineConfig({
 })
 ```
 
-The plugin auto-injects devtools into your Inertia entrypoint and strips them from production builds automatically.
+The plugin auto-injects devtools into your Inertia entrypoint on the dev server and strips them from every build automatically.
 
 > [!NOTE]
 > Auto-injection looks for a module that imports `createInertiaApp` from an `@inertiajs/*` package. If you wrap that import behind your own module, add `import 'inertia-devtools'` to your entrypoint yourself — the plugin still handles options and production stripping.
@@ -139,7 +139,9 @@ Listens to Inertia DOM events and correlates them into request records by visit 
 
 The UI renders inside a Shadow DOM -- your app styles are never affected. State is kept in a bounded buffer (200 requests max).
 
-In production builds the Vite plugin resolves devtools imports to a no-op, so `import 'inertia-devtools'` can stay in your code permanently — zero bytes ship to users. Opt out with `inertiaDevtools({ stripInProduction: false })`.
+In any build the Vite plugin resolves devtools imports to a no-op, so `import 'inertia-devtools'` can stay in your code permanently — zero bytes ship to users. Stripping keys off `vite build`, not off `--mode`: a preview or QA host built with `--mode development` is still a build, and still strips. Devtools appear on the dev server (`vite`) whatever the mode.
+
+To ship devtools inside a build on purpose, opt out explicitly with `inertiaDevtools({ stripInProduction: false })` and pair it with the runtime `enabled` option to control who sees the panel.
 
 ## Requirements
 

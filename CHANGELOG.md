@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning].
 
 ## [Unreleased]
 
+### Security
+
+- Credentials are redacted before anything reaches the store. A login POST previously put its request body (`password`) and headers (`Authorization`, `X-CSRF-Token`) into the panel verbatim and, worse, into the "Copy for AI" / JSON export — a feature whose whole purpose is pasting into an issue or a chat. Values under keys matching `password`/`secret`/`token`/`authorization`/`cookie`/`csrf`/`api_key`/`credential` are now masked at capture time, across all three routes that carried them: visit options, wire request/response headers, and raw event details. Structure is preserved so the shape stays debuggable, and `authorization` is spelled out rather than `auth` so an ordinary `author` prop is untouched. Server-sent page props are deliberately not filtered — they are the product ([@skryukov])
+
+### Fixed
+
+- The Vite plugin no longer keeps devtools in `vite build --mode development`. Stripping now keys off `vite build` rather than `--mode`, so a preview or QA host built with that flag no longer serves a live, mounting devtools panel to every visitor. The plugin's injected `_init()` call bypasses the runtime `NODE_ENV` gate, so stripping was the only thing standing between that flag and a public panel. Shipping devtools in a build is now one explicit opt-in (`stripInProduction: false`) instead of an implicit consequence of a mode chosen for unrelated reasons ([@skryukov])
+- The generated init module imports the router from the adapter the app actually uses (`@inertiajs/react`/`vue3`/`svelte`) instead of hard-coding `@inertiajs/core`, and probes resolvability before emitting the import. Apps depend on the adapter, not on core, so under pnpm, Yarn PnP, or any isolated `node_modules` the hard-coded import was unresolvable — which failed the module graph and took the whole app down with a 500, merely for adding the plugin. When nothing resolves, the router is omitted and only replay/reload go dark ([@skryukov])
+- The dev server injects devtools whatever the mode — `vite --mode staging` previously skipped injection silently ([@skryukov])
+- `createInRealmClient` is stubbed in the no-op module. It became a public export in 0.2.0 without a matching stub, so any app importing it built fine in dev and failed the production build with "not exported by inertia-devtools-noop". The test guarding this now derives the expected stub list from `src/index.ts` instead of restating the implementation, so it cannot drift again ([@skryukov])
+
 ## [0.2.0] - 2026-07-20
 
 Requires Inertia.js >= 3.4. For Inertia v2 / v3.0–3.3, use the `0.1.x` line.
