@@ -256,6 +256,88 @@ describe('Correlator', () => {
     })
   })
 
+  describe('inertia:location (Inertia >= 3.6)', () => {
+    it('enriches the 409 record after httpException without creating a duplicate', () => {
+      const visit = makeVisitObject({ method: 'post', url: new URL('http://localhost/posts') })
+      const response = { status: 409, headers: { 'x-inertia-location': '/posts' } }
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit }, 101))
+      correlator.processEvent(makeEvent('inertia:httpException', { response }, 145))
+      // location fires after httpException, carries no visit id (URL serialized by the store)
+      const record = correlator.processEvent(
+        makeEvent('inertia:location', { url: 'http://localhost/posts/1?tab=comments', versionChange: false }, 146),
+      )
+
+      expect(correlator.getRequests()).toHaveLength(1)
+      expect(record!.type).toBe('redirect')
+      expect(record!.status).toBe(409)
+      expect(record!.redirectUrl).toBe('/posts/1?tab=comments')
+      expect(record!.diagnostics.some((d) => d.id === 'server-redirect')).toBe(true)
+      expect(record!.diagnostics.some((d) => d.id === 'version-mismatch')).toBe(false)
+    })
+
+    it('reports a version change as version mismatch', () => {
+      const visit = makeVisitObject()
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:httpException', { response: { status: 409 } }, 145))
+      const record = correlator.processEvent(
+        makeEvent('inertia:location', { url: 'http://localhost/users', versionChange: true }, 146),
+      )
+
+      expect(record!.type).toBe('redirect')
+      expect(record!.diagnostics.some((d) => d.id === 'version-mismatch')).toBe(true)
+      expect(record!.diagnostics.some((d) => d.id === 'server-redirect')).toBe(false)
+    })
+
+    it('marks the in-flight record as redirect even without a preceding httpException', () => {
+      const visit = makeVisitObject()
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      const record = correlator.processEvent(
+        makeEvent('inertia:location', { url: new URL('http://localhost/fresh'), versionChange: true }, 120),
+      )
+
+      expect(record!.type).toBe('redirect')
+      expect(record!.redirectUrl).toBe('/fresh')
+    })
+  })
+
+  describe('poll visits (Inertia >= 3.6)', () => {
+    it('classifies visits carrying poll: true as poll', () => {
+      const visit = makeVisitObject({ poll: true })
+      const record = correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+
+      expect(record!.type).toBe('poll')
+    })
+
+    it('poll wins over partial but preserves only/except capture', () => {
+      const visit = makeVisitObject({ poll: true, only: ['notifications'] })
+      const record = correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+
+      expect(record!.type).toBe('poll')
+      expect(record!.only).toEqual(['notifications'])
+    })
+
+    it('extracts a POLL feature badge once the page arrives', () => {
+      const visit = makeVisitObject({ poll: true })
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:navigate', { page: makePage(), visitId: visit.id }, 150))
+
+      const record = correlator.getRequests()[0]
+      expect(record.features.some((f) => f.type === 'poll')).toBe(true)
+    })
+
+    it('classifies as today when the flag is absent (Inertia 3.4/3.5)', () => {
+      const visit = makeVisitObject({ only: ['notifications'] })
+      const record = correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+
+      expect(record!.type).toBe('partial')
+    })
+  })
+
   describe('feature extraction', () => {
     it('detects encrypted history', () => {
       const visit = makeVisitObject()
@@ -435,9 +517,54 @@ describe('Correlator', () => {
     })
   })
 
-  describe('POST redirect (beforeUpdate page extraction)', () => {
-    it('extracts page from beforeUpdate when navigate does not fire', () => {
-      // POST→302→GET: navigate never fires (replace=true in Inertia client)
+  describe('prevented visits (inertia:before preventDefault)', () => {
+    it('finalizes a prevented before as a prevented record, not an in-flight phantom', () => {
+      const visit = makeVisitObject()
+      const record = correlator.processEvent({ ...makeEvent('inertia:before', { visit }, 100), prevented: true })
+
+      expect(record).not.toBeNull()
+      expect(record!.prevented).toBe(true)
+      expect(record!.completed).toBe(false)
+      expect(record!.finishedAt).toBe(100)
+      expect(record!.duration).toBe(0)
+      expect(record!.diagnostics.some((d) => d.id === 'visit-prevented')).toBe(true)
+    })
+
+    it('does not absorb later id-less events into a prevented record', () => {
+      const visit = makeVisitObject()
+      correlator.processEvent({ ...makeEvent('inertia:before', { visit }, 100), prevented: true })
+
+      // The in-flight fallback must skip the finalized prevented record
+      const result = correlator.processEvent(
+        makeEvent('inertia:progress', { progress: { loaded: 10, total: 100, percentage: 10 } }, 110),
+      )
+
+      expect(result).toBeNull()
+      expect(correlator.getRequests()[0].events).toHaveLength(1)
+    })
+
+    it('records a prevented prefetch immediately (no start will ever confirm it)', () => {
+      const visit = makeVisitObject({ prefetch: true })
+      const record = correlator.processEvent({ ...makeEvent('inertia:before', { visit }, 100), prevented: true })
+
+      expect(record).not.toBeNull()
+      expect(record!.prevented).toBe(true)
+      expect(correlator.getRequests()).toHaveLength(1)
+    })
+
+    it('non-prevented before creates an in-flight record exactly as before', () => {
+      const visit = makeVisitObject()
+      const record = correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+
+      expect(record!.prevented).toBeUndefined()
+      expect(record!.finishedAt).toBeUndefined()
+    })
+  })
+
+  describe('POST redirect (replace visits, page via success)', () => {
+    it('extracts page from success when navigate does not fire', () => {
+      // POST→302→GET back to the same URL: page.set forces replace, so navigate
+      // never fires — success (carrying page + visitId) is the exact-id source.
       const visit = makeVisitObject({ method: 'post', url: new URL('http://localhost/posts') })
       const page = makePage({
         component: 'Pages/Posts/Index',
@@ -448,8 +575,8 @@ describe('Correlator', () => {
       correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
       correlator.processEvent(makeEvent('inertia:start', { visit }, 101))
       correlator.processEvent(makeEvent('inertia:beforeUpdate', { page }, 110))
-      correlator.processEvent(makeEvent('inertia:flash', {}, 111))
-      correlator.processEvent(makeEvent('inertia:success', {}, 112))
+      correlator.processEvent(makeEvent('inertia:flash', { flash: { notice: 'Created!' } }, 111))
+      correlator.processEvent(makeEvent('inertia:success', { page, visitId: visit.id }, 112))
       correlator.processEvent(makeEvent('inertia:finish', { visit: { ...visit, completed: true } }, 113))
 
       const requests = correlator.getRequests()
@@ -459,18 +586,47 @@ describe('Correlator', () => {
       expect(requests[0].features.some((f) => f.type === 'flash')).toBe(true)
     })
 
-    it('does not overwrite page set by navigate', () => {
-      // Normal flow: beforeUpdate fires first, then navigate
+    it('does not set page from the id-less beforeUpdate fallback', () => {
       const visit = makeVisitObject()
-      const beforeUpdatePage = makePage({ props: { partial: true } })
-      const navigatePage = makePage({ props: { full: true } })
+      const page = makePage()
 
       correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
-      correlator.processEvent(makeEvent('inertia:beforeUpdate', { page: beforeUpdatePage }, 110))
-      correlator.processEvent(makeEvent('inertia:navigate', { page: navigatePage }, 115))
+      correlator.processEvent(makeEvent('inertia:beforeUpdate', { page }, 110))
+
+      // beforeUpdate attaches the event but never pins a page — attribution is
+      // heuristic and the page arrives via exact-id navigate/success instead.
+      const record = correlator.getRequests()[0]
+      expect(record.events.some((e) => e.name === 'inertia:beforeUpdate')).toBe(true)
+      expect(record.page).toBeUndefined()
+    })
+
+    it('extracts page from error events for failed replace visits', () => {
+      // Validation failure on POST→same-URL: error carries page + visitId.
+      const visit = makeVisitObject({ method: 'post', url: new URL('http://localhost/posts') })
+      const errors = { title: 'Required' }
+      const page = makePage({ component: 'Pages/Posts/New', url: '/posts/new', props: { errors } })
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:beforeUpdate', { page }, 110))
+      correlator.processEvent(makeEvent('inertia:error', { errors, page, visitId: visit.id }, 112))
+
+      const record = correlator.getRequests()[0]
+      expect(record.page).toEqual(page)
+      expect(record.error).toEqual(errors)
+    })
+
+    it('navigate and success carry the same page — last writer wins harmlessly', () => {
+      // Normal flow: beforeUpdate → navigate (exact id) → success (exact id),
+      // all delivering the same merged page object.
+      const visit = makeVisitObject()
+      const page = makePage({ props: { full: true } })
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:beforeUpdate', { page }, 110))
+      correlator.processEvent(makeEvent('inertia:navigate', { page, visitId: visit.id }, 115))
+      correlator.processEvent(makeEvent('inertia:success', { page, visitId: visit.id }, 116))
 
       const requests = correlator.getRequests()
-      // beforeUpdate sets page first; navigate should overwrite it
       expect(requests[0].page!.props).toEqual({ full: true })
     })
 
@@ -487,6 +643,101 @@ describe('Correlator', () => {
 
       const requests = correlator.getRequests()
       expect(requests[1].previousPage).toEqual(page1)
+    })
+  })
+
+  describe('concurrent async visits (id-less beforeUpdate misattribution)', () => {
+    it("does not pin visit A's page on visit B via the beforeUpdate fallback", () => {
+      // Two concurrent async visits: A's response is applied while B is the
+      // newest in-flight record. A's id-less beforeUpdate attaches to B (the
+      // fallback's best guess) — but B's page must not be set from it. Each
+      // record gets its page from its own exact-id success event.
+      const visitA = makeVisitObject({ method: 'post', url: new URL('http://localhost/posts'), async: true })
+      const visitB = makeVisitObject({ url: new URL('http://localhost/users'), async: true })
+      const pageA = makePage({ component: 'Pages/Posts/Index', url: '/posts', flash: { notice: 'Created!' } })
+      const pageB = makePage({ component: 'Pages/Users/Index', url: '/users' })
+
+      correlator.processEvent(makeEvent('inertia:before', { visit: visitA }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit: visitA }, 101))
+      correlator.processEvent(makeEvent('inertia:before', { visit: visitB }, 110))
+      correlator.processEvent(makeEvent('inertia:start', { visit: visitB }, 111))
+
+      // A's response applies first (POST→same-URL forces replace: no navigate)
+      correlator.processEvent(makeEvent('inertia:beforeUpdate', { page: pageA }, 120))
+
+      const recordA = correlator.getRequests().find((r) => r.inertiaVisitId === visitA.id)!
+      const recordB = correlator.getRequests().find((r) => r.inertiaVisitId === visitB.id)!
+
+      // The fallback attached A's beforeUpdate to B (newest in flight)…
+      expect(recordB.events.some((e) => e.name === 'inertia:beforeUpdate')).toBe(true)
+      // …but B's page must NOT be pinned from it
+      expect(recordB.page).toBeUndefined()
+
+      // A's page arrives via its own exact-id success event
+      correlator.processEvent(makeEvent('inertia:success', { page: pageA, visitId: visitA.id }, 121))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...visitA, completed: true } }, 122))
+
+      expect(recordA.page).toEqual(pageA)
+      expect(recordB.page).toBeUndefined()
+
+      // B completes normally and gets its own page
+      correlator.processEvent(makeEvent('inertia:beforeUpdate', { page: pageB }, 130))
+      correlator.processEvent(makeEvent('inertia:navigate', { page: pageB, visitId: visitB.id }, 131))
+      correlator.processEvent(makeEvent('inertia:success', { page: pageB, visitId: visitB.id }, 132))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...visitB, completed: true } }, 133))
+
+      expect(recordA.page).toEqual(pageA)
+      expect(recordB.page).toEqual(pageB)
+    })
+
+    it('flags fallback-attached events as heuristic, but not id-resolved ones', () => {
+      const visit = makeVisitObject()
+      const page = makePage()
+
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit }, 101))
+      correlator.processEvent(
+        makeEvent('inertia:progress', { progress: { loaded: 10, total: 100, percentage: 10 } }, 105),
+      )
+      correlator.processEvent(makeEvent('inertia:beforeUpdate', { page }, 110))
+      correlator.processEvent(makeEvent('inertia:navigate', { page, visitId: visit.id }, 111))
+      correlator.processEvent(makeEvent('inertia:success', { page, visitId: visit.id }, 112))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...visit, completed: true } }, 113))
+
+      const record = correlator.getRequests()[0]
+      const byName = (name: string) => record.events.find((e) => e.name === name)!
+
+      // id-less events resolved via the in-flight fallback
+      expect(byName('inertia:progress').heuristic).toBe(true)
+      expect(byName('inertia:beforeUpdate').heuristic).toBe(true)
+
+      // events resolved by exact id (visit object or top-level visitId)
+      expect(byName('inertia:before').heuristic).toBeUndefined()
+      expect(byName('inertia:start').heuristic).toBeUndefined()
+      expect(byName('inertia:navigate').heuristic).toBeUndefined()
+      expect(byName('inertia:success').heuristic).toBeUndefined()
+      expect(byName('inertia:finish').heuristic).toBeUndefined()
+    })
+
+    it('flags id-less start/finish (pre-3.4 payloads) as heuristic', () => {
+      correlator.processEvent(makeEvent('inertia:before', { visit: { method: 'get' } }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit: { method: 'get' } }, 101))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { method: 'get', completed: true } }, 111))
+
+      const record = correlator.getRequests()[0]
+      const byName = (name: string) => record.events.find((e) => e.name === name)!
+      expect(byName('inertia:start').heuristic).toBe(true)
+      expect(byName('inertia:finish').heuristic).toBe(true)
+      expect(byName('inertia:before').heuristic).toBeUndefined()
+    })
+
+    it('flags an id-less navigate resolved via the in-flight fallback as heuristic', () => {
+      const visit = makeVisitObject()
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      const record = correlator.processEvent(makeEvent('inertia:navigate', { page: makePage() }, 110))
+
+      expect(record!.inertiaVisitId).toBe(visit.id)
+      expect(record!.events.find((e) => e.name === 'inertia:navigate')!.heuristic).toBe(true)
     })
   })
 
@@ -864,6 +1115,21 @@ describe('Correlator', () => {
       const page = makePage({ component: 'Pages/Landing' })
       correlator.processEvent(makeEvent('inertia:navigate', { page }, 50))
       expect(correlator.getCurrentPage()?.component).toBe('Pages/Landing')
+    })
+
+    it('marks the true initial load (no prior page state) with the initial flag', () => {
+      const record = correlator.processEvent(makeEvent('inertia:navigate', { page: makePage() }, 50))
+      expect(record!.initial).toBe(true)
+    })
+
+    it('does not mark mid-session synthetic records (history restore) as initial', () => {
+      correlator.processEvent(makeEvent('inertia:navigate', { page: makePage() }, 50))
+
+      // popstate restore: id-less navigate with prior page state
+      const record = correlator.processEvent(makeEvent('inertia:navigate', { page: makePage({ url: '/back' }) }, 500))
+
+      expect(record!.initial).toBeUndefined()
+      expect(record!.startedAt).toBe(500)
     })
   })
 
@@ -1367,6 +1633,32 @@ describe('Correlator', () => {
     it('does not crash on unmatched entries', () => {
       const timing = makeTiming({ url: 'http://localhost/no-match' })
       expect(() => correlator.linkNetworkTiming(timing)).not.toThrow()
+    })
+
+    it('uses responseStatus as a status fallback with a forced-reload diagnostic for 409', () => {
+      // Inertia 3.4/3.5 fire no event for a 409 + X-Inertia-Location — the
+      // Resource Timing entry is the only trace of the forced reload.
+      const visit = makeVisitObject()
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit }, 101))
+
+      const timing = makeTiming({ startedAt: 105, finishedAt: 140, responseStatus: 409 })
+      const result = correlator.linkNetworkTiming(timing)
+
+      expect(result!.status).toBe(409)
+      expect(result!.diagnostics.some((d) => d.id === 'forced-reload')).toBe(true)
+    })
+
+    it('does not overwrite a status reported by events or interceptors', () => {
+      const visit = makeVisitObject()
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit }, 101))
+      correlator.attachWireResponse(visit.id as string, { status: 200, headers: {}, finishedAt: 140 })
+
+      const timing = makeTiming({ startedAt: 105, finishedAt: 140, responseStatus: 409 })
+      const result = correlator.linkNetworkTiming(timing)
+
+      expect(result!.status).toBe(200)
     })
 
     it('matches by pathname, ignoring host differences', () => {

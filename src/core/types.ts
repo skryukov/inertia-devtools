@@ -12,12 +12,16 @@ export interface CapturedEvent {
   name: InertiaEventName
   timestamp: number // performance.now()
   detail: Record<string, unknown>
+  /** inertia:before only: a listener called preventDefault(), so the visit never started. */
+  prevented?: boolean
+  /** Attached via the most-recent-in-flight fallback — the event carries no visit id, so attribution is a guess. */
+  heuristic?: boolean
 }
 
 /**
  * Visit type classification.
  */
-export type VisitType = 'full' | 'partial' | 'prefetch' | 'deferred' | 'redirect' | 'client'
+export type VisitType = 'full' | 'partial' | 'prefetch' | 'deferred' | 'redirect' | 'client' | 'poll'
 
 /**
  * Active Inertia feature detected on a request.
@@ -34,6 +38,7 @@ export interface ActiveFeature {
     | 'encrypted'
     | 'clear-history'
     | 'prefetch'
+    | 'poll'
     | 'flash'
     | 'remember'
     | 'cached'
@@ -56,6 +61,10 @@ export interface RequestRecord {
   except?: string[]
   /** Served from the prefetch cache (navigate fired with cached: true). */
   cached?: boolean
+  /** An inertia:before listener called preventDefault() — the visit never started. */
+  prevented?: boolean
+  /** Synthetic record for the initial full-page load (navigate with no prior page state). */
+  initial?: boolean
   status?: number
   startedAt: number
   finishedAt?: number
@@ -68,6 +77,13 @@ export interface RequestRecord {
   interrupted: boolean
   completed: boolean
   error?: unknown
+  /**
+   * The response never merged: HTTP exception or network error. Distinct from
+   * `error`, which also holds validation errors — those visits DID merge
+   * (Inertia fires inertia:error for any page whose merged props carry errors,
+   * including partial reloads that merely carried them over).
+   */
+  failed?: boolean
   redirectUrl?: string
   visitOptions?: Record<string, unknown>
   diagnostics: Diagnostic[]
@@ -85,7 +101,7 @@ export interface WireRequestData {
 }
 
 /**
- * Response wire data. Captured via the response interceptor for 2xx Inertia
+ * Response wire data. Captured via the response interceptor for Inertia
  * responses; prefetch responses and HTTP exceptions bypass the interceptor
  * and are extracted from the inertia:prefetched / inertia:httpException events.
  */
@@ -155,6 +171,8 @@ export interface SessionRequestSummary {
   completed: boolean
   cancelled: boolean
   interrupted: boolean
+  prevented?: boolean
+  initial?: boolean
   only?: string[]
   except?: string[]
   redirectUrl?: string
@@ -181,6 +199,16 @@ export interface SessionSnapshot {
 export type DocsProvider = 'inertiajs' | 'inertia-rails'
 
 /**
+ * Minimal duck type for the app's Inertia router. The devtools cannot import
+ * @inertiajs/core at runtime (peer dependency — importing it would bundle a
+ * second copy with its own state), so actions only rely on this shape.
+ */
+export interface InertiaRouterLike {
+  visit(url: string, options?: Record<string, unknown>): void
+  reload(options?: Record<string, unknown>): void
+}
+
+/**
  * Options for initializing the devtools.
  */
 export interface DevToolsOptions {
@@ -190,4 +218,10 @@ export interface DevToolsOptions {
   enabled?: boolean
   /** Documentation site for feature links. Default: 'inertiajs' */
   docsProvider?: DocsProvider
+  /**
+   * The app's own Inertia router — enables devtools actions (replay a visit,
+   * reload). Injected automatically by the Vite plugin; manual-import users
+   * may pass `router` from @inertiajs/core themselves.
+   */
+  router?: InertiaRouterLike
 }
