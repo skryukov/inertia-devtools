@@ -7,7 +7,7 @@
   import { getFeatureInfo } from '../shared/feature-info'
   import { copyToClipboard } from '../shared/clipboard'
   import { isNonEmptyRecord } from '../shared/storage'
-  import { jsonByteSize, formatBytes } from '../shared/format'
+  import { jsonByteSize, formatBytes, displayValue } from '../shared/format'
   import { searchPaths } from '../shared/tree-search'
   import { ICON_COPY } from '../shared/icons'
   import TreeView from '../shared/TreeView.svelte'
@@ -264,7 +264,11 @@
             {#each Object.entries(errors) as [key, value] (key)}
               <div class="kv-row">
                 <span class="kv-key">{key}</span>
-                <span class="kv-value error-value">{value}</span>
+                <!-- Adapters put arrays (or nested bags) here as often as
+                     strings; interpolating raw rendered "a,b" or the useless
+                     "[object Object]". The markdown export was fixed for this
+                     and the panel was not. -->
+                <span class="kv-value error-value">{displayValue(value)}</span>
               </div>
             {/each}
           </div>
@@ -281,7 +285,7 @@
             {#each Object.entries(flash) as [key, value] (key)}
               <div class="kv-row">
                 <span class="kv-key">{key}</span>
-                <span class="kv-value">{typeof value === 'string' ? value : JSON.stringify(value)}</span>
+                <span class="kv-value">{displayValue(value)}</span>
               </div>
             {/each}
           </div>
