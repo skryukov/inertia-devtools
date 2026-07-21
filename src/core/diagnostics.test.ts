@@ -347,6 +347,50 @@ describe('failed requests (adversarial recall)', () => {
     expect(diags.some((d) => d.id === 'deferred-failed')).toBe(true)
   })
 
+  describe('partials the server ignored', () => {
+    // router.get('/elsewhere', {}, { only: ['something'] }) where /elsewhere
+    // renders a different component: Inertia never applies the partial.
+    const landedElsewhere = {
+      only: ['something'],
+      status: 200,
+      previousPage: makePage({ component: 'Poll' }),
+      page: makePage({ component: 'Users', props: { users: [] } }),
+    }
+
+    it('explains the redirect instead of blaming the server for a missing prop', () => {
+      const diags = computeDiagnostics(makeRequest(landedElsewhere))
+      expect(diags.find((d) => d.id === 'partial-prop-missing')).toBeUndefined()
+      const ignored = diags.find((d) => d.id === 'partial-ignored')
+      expect(ignored?.message).toContain('Users')
+      expect(ignored?.message).toContain('Poll')
+    })
+
+    it('does not report stale errors from a response that replaced the page', () => {
+      const errors = { name: 'is required' }
+      const req = makeRequest({
+        ...landedElsewhere,
+        page: makePage({ component: 'Users', props: { errors } }),
+        previousPage: makePage({ component: 'Poll', props: { errors: { name: 'is required' } } }),
+      })
+      expect(computeDiagnostics(req).find((d) => d.id === 'stale-errors')).toBeUndefined()
+    })
+
+    it('stays silent when the partial stayed on its own component', () => {
+      const req = makeRequest({
+        only: ['users'],
+        status: 200,
+        previousPage: makePage({ component: 'Users' }),
+        page: makePage({ component: 'Users', props: { users: [] } }),
+      })
+      expect(computeDiagnostics(req).find((d) => d.id === 'partial-ignored')).toBeUndefined()
+    })
+
+    it('still flags a missing prop when the component is unknown', () => {
+      const req = makeRequest({ only: ['ghost'], status: 200, page: makePage({ props: {} }) })
+      expect(computeDiagnostics(req).find((d) => d.id === 'partial-prop-missing')).toBeDefined()
+    })
+  })
+
   describe('rescued props (Inertia >= 3.6)', () => {
     it('reports a prop the server rescued instead of blaming the partial reload', () => {
       const req = makeRequest({

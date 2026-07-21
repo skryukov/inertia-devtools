@@ -27,6 +27,7 @@ Requires Inertia.js >= 3.4. For Inertia v2 / v3.0–3.3, use the `0.1.x` line.
 - Replay action: re-issue a selected GET visit (same `only`/`except`) straight from the panel — the Vite plugin hands devtools the app's own router instance via its init module; non-GET replays are refused (they would re-submit the mutation), and manual-import users can pass `router` to `createInertiaDevtools` ([@skryukov])
 - `Alt+Shift+D` toggles the panel from anywhere (respects inputs, contenteditable, and ARIA widgets; focuses the PiP window while popped out) ([@skryukov])
 - One-time console warning when the host app runs Inertia older than 3.4 ([@skryukov])
+- A partial reload that lands on a different component is reported as ignored, naming both components. The server only honors `only`/`except` when the component matches the page the visit was issued from, so a partial that hits an auth redirect (or any route rendering another page) gets a full response — previously flagged as the server failing to send a prop it was never asked for ([@skryukov])
 - Inertia 3.6: `rescuedProps` support — a prop whose server-side resolver threw and was rescued (`Inertia::defer(..., rescue: true)`) is reported as "failed to resolve on the server and was rescued" instead of being mistaken for a missing prop. Only newly-rescued props warn; the list persists across visits until a partial reload re-requests them ([@skryukov])
 
 ### Changed

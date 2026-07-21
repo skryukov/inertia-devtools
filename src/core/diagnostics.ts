@@ -19,6 +19,7 @@ const rules: DiagnosticRule[] = [
   detectVersionMismatch,
   detectCancelledVisit,
   detectPartialPropMissing,
+  detectPartialIgnored,
   detectRescuedProps,
   detectStaleErrors,
   detectDiscardedResponse,
@@ -89,10 +90,38 @@ function propRulesApply(req: RequestRecord): boolean {
   return !isDiscardedResponse(req)
 }
 
+/**
+ * The server honors `only`/`except` only when the visit's component matches
+ * the page it was issued from (that is what X-Inertia-Partial-Component is
+ * checked against). A partial that lands somewhere else — an auth redirect, a
+ * route returning a different page — gets a plain full response instead, so
+ * the requested props were never expected in it.
+ */
+function partialWasApplied(req: RequestRecord): boolean {
+  const from = req.previousPage?.component
+  const to = req.page?.component
+  // Unknown either side: assume applied rather than silently skipping a rule.
+  if (!from || !to) return true
+  return from === to
+}
+
+function detectPartialIgnored(req: RequestRecord): Diagnostic | null {
+  const isPartial = Boolean(req.only?.length || req.except?.length)
+  if (!isPartial || !propRulesApply(req) || partialWasApplied(req)) return null
+
+  return {
+    id: 'partial-ignored',
+    severity: 'info',
+    message: `Partial reload ignored — the visit landed on '${req.page?.component}' instead of '${req.previousPage?.component}', so the server returned a full page`,
+  }
+}
+
 function detectPartialPropMissing(req: RequestRecord): Diagnostic | null {
   // A discarded response never merged, so req.page is the superseding page —
   // judging the requested props against it would be a false alarm; failed
-  // requests never delivered props at all.
+  // requests never delivered props at all. A partial the server ignored is
+  // reported by detectPartialIgnored with the actual reason.
+  if (!partialWasApplied(req)) return null
   if (req.only?.length && req.page?.props && propRulesApply(req)) {
     const props = req.page.props
     // A rescued prop is absent on purpose — detectRescuedProps reports it with
@@ -120,8 +149,9 @@ function detectStaleErrors(req: RequestRecord): Diagnostic | null {
   const isPartial = Boolean(req.only?.length || req.except?.length)
   if (!isPartial) return null
   // Failed and discarded responses never merged — their req.page says nothing
-  // about this visit.
-  if (!propRulesApply(req)) return null
+  // about this visit. Nor did an ignored partial: that response replaced the
+  // page wholesale, so its errors came from the server, not a merge.
+  if (!propRulesApply(req) || !partialWasApplied(req)) return null
 
   const errors = req.page?.props?.errors
   if (!isNonEmptyObject(errors)) return null
