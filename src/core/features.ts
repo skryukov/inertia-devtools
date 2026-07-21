@@ -1,6 +1,6 @@
 import type { InertiaPage } from './protocol'
 import type { ActiveFeature, RequestRecord } from './types'
-import { isNonEmptyRecord } from '../ui/shared/storage'
+import { isNonEmptyRecord } from './utils'
 
 /**
  * Extract page-level Inertia features from a page object.
@@ -115,6 +115,11 @@ export function extractFeatures(record: RequestRecord, page: InertiaPage): Activ
   // Request-specific: Prefetch
   if (record.type === 'prefetch') {
     features.push({ type: 'prefetch', label: 'PREFETCH' })
+  }
+
+  // Request-specific: router.poll() traffic (Inertia >= 3.6)
+  if (record.type === 'poll') {
+    features.push({ type: 'poll', label: 'POLL' })
   }
 
   // Request-specific: served from the prefetch cache (navigate fired with cached: true)

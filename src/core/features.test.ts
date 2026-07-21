@@ -127,6 +127,11 @@ describe('extractFeatures', () => {
     expect(features.find((f) => f.type === 'prefetch')).toMatchObject({ label: 'PREFETCH' })
   })
 
+  it('detects poll (Inertia >= 3.6)', () => {
+    const features = extractFeatures(makeRecord({ type: 'poll' }), makePage())
+    expect(features.find((f) => f.type === 'poll')).toMatchObject({ label: 'POLL' })
+  })
+
   it('detects flash data', () => {
     const page = makePage({ flash: { success: 'Saved!' } })
     const features = extractFeatures(makeRecord(), page)

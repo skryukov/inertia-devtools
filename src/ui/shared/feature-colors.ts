@@ -21,6 +21,8 @@ export function featureColor(type: string): string {
       return 'var(--dt-amber)'
     case 'prefetch':
       return 'var(--dt-cyan)'
+    case 'poll':
+      return 'var(--dt-teal)'
     case 'flash':
       return 'var(--dt-amber)'
     case 'once':
