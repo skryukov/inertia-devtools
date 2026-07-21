@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/svelte'
+import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
 import TreeView from './TreeView.svelte'
+import { searchPaths } from './tree-search'
 
 /**
  * The first Svelte component test in this project. `@testing-library/svelte`
@@ -37,12 +38,43 @@ describe('TreeView', () => {
     expect(screen.queryByText('"deep-value"')).toBeNull()
   })
 
-  it('expands a node whose path is in forceExpand (search auto-expansion)', () => {
-    render(TreeView, {
-      data: { outer: { inner: 'deep-value' } },
-      defaultOpen: true,
-      forceExpand: new Set(['outer']),
-    })
+  it('expands ancestors to reveal a search match', () => {
+    const data = { outer: { inner: 'deep-value' } }
+    const { matches, expand } = searchPaths(data, 'deep-value')
+    render(TreeView, { data, defaultOpen: true, searchMatches: matches, forceExpand: expand })
     expect(screen.getByText('"deep-value"')).toBeTruthy()
+  })
+
+  it('renders only match paths while searching, and says what it hid', () => {
+    // Expanding used to render ALL children of an expanded node, so one
+    // keystroke against a large collection mounted thousands of nested
+    // TreeViews synchronously on the host app's main thread.
+    const data = { wanted: 'needle', noise1: 'x', noise2: 'y', noise3: 'z' }
+    const { matches, expand } = searchPaths(data, 'needle')
+    render(TreeView, { data, defaultOpen: true, searchMatches: matches, forceExpand: expand })
+
+    expect(screen.getByText('wanted:')).toBeTruthy()
+    expect(screen.queryByText('noise1:')).toBeNull()
+    expect(screen.queryByText('noise2:')).toBeNull()
+    expect(screen.getByText(/3 non-matching keys hidden/)).toBeTruthy()
+  })
+
+  it('renders every child when no search is active', () => {
+    render(TreeView, { data: { a: 1, b: 2, c: 3 }, defaultOpen: true })
+    expect(screen.getByText('a:')).toBeTruthy()
+    expect(screen.getByText('c:')).toBeTruthy()
+    expect(screen.queryByText(/hidden/)).toBeNull()
+  })
+
+  it('lets an explicit collapse win over search auto-expansion', async () => {
+    // `forceExpand` used to be OR-ed on top of the user's state, so clicking to
+    // collapse a noisy subtree mid-search did nothing — the arrow did not flip.
+    const data = { outer: { inner: 'deep-value' } }
+    const { matches, expand } = searchPaths(data, 'deep-value')
+    render(TreeView, { data, defaultOpen: true, searchMatches: matches, forceExpand: expand })
+    expect(screen.getByText('"deep-value"')).toBeTruthy()
+
+    await fireEvent.click(screen.getByText('outer:'))
+    expect(screen.queryByText('"deep-value"')).toBeNull()
   })
 })

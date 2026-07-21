@@ -39,16 +39,36 @@ export function useResizable(opts: {
   }
 
   let captureTarget: Element | null = null
+  /**
+   * The document the drag is actually happening in — NOT the module-global
+   * `document`, which is the opener's. Popped out into the PiP window the
+   * handle lives in the popup's document, so listeners bound to the opener
+   * never fired: `onResizeEnd` never ran, the listeners were never removed and
+   * `resizing` latched true, after which every mouse move anywhere in the
+   * user's app resized the panel.
+   */
+  let dragDoc: Document | null = null
 
   function onResizeEnd(e: PointerEvent) {
     if (!resizing) return
     resizing = false
     if (captureTarget) {
-      captureTarget.releasePointerCapture(e.pointerId)
+      // Already released implicitly (the element was detached, the pointer was
+      // cancelled) — throwing here would skip the cleanup below.
+      try {
+        captureTarget.releasePointerCapture(e.pointerId)
+      } catch {
+        /* nothing to release */
+      }
       captureTarget = null
     }
-    document.removeEventListener('pointermove', onResizeMove)
-    document.removeEventListener('pointerup', onResizeEnd)
+    dragDoc?.removeEventListener('pointermove', onResizeMove)
+    dragDoc?.removeEventListener('pointerup', onResizeEnd)
+    // pointercancel fires INSTEAD of pointerup when a browser gesture steals
+    // the pointer (macOS back-swipe, pen input). Without it the drag never
+    // ended and the listeners stayed bound to the document forever.
+    dragDoc?.removeEventListener('pointercancel', onResizeEnd)
+    dragDoc = null
     saveSetting(storageKey, String(size))
   }
 
@@ -58,10 +78,16 @@ export function useResizable(opts: {
     startSize = size
     // Capture pointer so events don't leak to elements underneath (e.g. Vue DevTools)
     const el = e.currentTarget as Element
-    el.setPointerCapture(e.pointerId)
-    captureTarget = el
-    document.addEventListener('pointermove', onResizeMove)
-    document.addEventListener('pointerup', onResizeEnd)
+    try {
+      el.setPointerCapture(e.pointerId)
+      captureTarget = el
+    } catch {
+      /* capture unavailable — the drag still works via document listeners */
+    }
+    dragDoc = el.ownerDocument
+    dragDoc.addEventListener('pointermove', onResizeMove)
+    dragDoc.addEventListener('pointerup', onResizeEnd)
+    dragDoc.addEventListener('pointercancel', onResizeEnd)
   }
 
   return {

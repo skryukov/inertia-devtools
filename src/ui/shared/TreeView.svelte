@@ -1,6 +1,9 @@
 <script lang="ts">
   import { inlineValue } from './format'
   import { childPath } from './tree-search'
+
+  /** Max children rendered per node while a search is active — see `entries`. */
+  const MAX_RENDERED_CHILDREN = 50
   import TreeView from './TreeView.svelte'
 
   let {
@@ -27,19 +30,55 @@
   const initialOpen = $derived(defaultOpen || depth < 1)
   let open = $state<boolean | null>(null)
   // Search expansion is a separate layer merged at render time so the user's
-  // manual expand/collapse state survives the query being cleared.
-  const isOpen = $derived((forceExpand?.has(path) ?? false) || (open ?? initialOpen))
+  // manual expand/collapse state survives the query being cleared. An explicit
+  // toggle wins over it: with `forceExpand` OR-ed on top, clicking to collapse
+  // a noisy subtree during a search did nothing — the arrow did not even flip.
+  const isOpen = $derived(open ?? ((forceExpand?.has(path) ?? false) || initialOpen))
   const isMatch = $derived(searchMatches?.has(path) ?? false)
 
   const isObject = $derived(data !== null && typeof data === 'object' && !Array.isArray(data))
   const isArray = $derived(Array.isArray(data))
   const isExpandable = $derived(isObject || isArray)
 
-  const entries = $derived.by(() => {
+  const allEntries = $derived.by(() => {
     if (isArray) return (data as unknown[]).map((v, i) => [String(i), v] as const)
     if (isObject) return Object.entries(data as Record<string, unknown>)
     return []
   })
+
+  /** A search is running when the parent handed us result sets. */
+  const searching = $derived(Boolean(searchMatches || forceExpand))
+
+  /**
+   * While searching, render only children on a match path.
+   *
+   * Expanding a node used to render ALL of its children, so a query matching
+   * deep inside a large collection expanded ~1,000 paths and mounted several
+   * thousand nested TreeViews synchronously — on the host app's main thread,
+   * because the devtools share it. Typing "e" (the first letter of "email")
+   * was enough. The 150ms debounce delayed that, it did not prevent it.
+   */
+  const matchingEntries = $derived.by(() => {
+    if (!searching) return allEntries
+    return allEntries.filter(([key]) => {
+      const child = childPath(path, key, isArray)
+      return searchMatches?.has(child) || forceExpand?.has(child)
+    })
+  })
+
+  /**
+   * Filtering to match paths is not enough on its own: a one-letter query like
+   * "e" legitimately matches most of a collection (every email, name and role
+   * contains one), so the filter barely reduces anything and thousands of
+   * nested components still mount synchronously. Cap what renders and say how
+   * much was left out — the count comes from the search, so nothing is hidden
+   * silently.
+   */
+  const entries = $derived(searching ? matchingEntries.slice(0, MAX_RENDERED_CHILDREN) : allEntries)
+
+  /** Children not rendered: filtered out by the search, or over the cap. */
+  const hiddenCount = $derived(searching ? allEntries.length - entries.length : 0)
+  const cappedCount = $derived(matchingEntries.length - entries.length)
 
   const preview = $derived.by(() => {
     if (data === null) return 'null'
@@ -89,6 +128,15 @@
           {forceExpand}
         />
       {/each}
+      {#if hiddenCount > 0}
+        <div class="filtered-note" style:padding-left="{(depth + 1) * 14}px">
+          {#if cappedCount > 0}
+            {cappedCount} more {cappedCount === 1 ? 'match' : 'matches'} not shown — refine the search
+          {:else}
+            {hiddenCount} non-matching {hiddenCount === 1 ? 'key' : 'keys'} hidden
+          {/if}
+        </div>
+      {/if}
       {#if entries.length === 0}
         <span class="empty" style:padding-left="{(depth + 1) * 14}px">empty</span>
       {/if}
@@ -102,6 +150,13 @@
 </div>
 
 <style>
+  .filtered-note {
+    font-size: 11px;
+    font-style: italic;
+    color: var(--dt-text-dim);
+    padding-block: 2px;
+  }
+
   .tree-node {
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
     font-size: 11.5px;

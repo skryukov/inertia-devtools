@@ -218,7 +218,18 @@ export interface InertiaRouterLike {
  * Options for initializing the devtools.
  */
 export interface DevToolsOptions {
-  /** CSP nonce for inline styles in Shadow DOM */
+  /**
+   * CSP nonce applied to the devtools' base stylesheet (the design tokens in
+   * the shadow root, and the popup document in PiP mode).
+   *
+   * It does NOT cover per-component styles: those are injected at runtime by
+   * Svelte's `append_styles`, which sets no nonce and offers no hook for one,
+   * and a nonce assigned after insertion does not retroactively satisfy CSP.
+   * So under a strict `style-src 'nonce-...'` with no `unsafe-inline`, the
+   * panel renders structurally but unstyled and the host app's report-uri
+   * collects violations it did not cause. Fixing that properly means emitting
+   * component CSS as an asset and injecting it ourselves.
+   */
   styleNonce?: string
   /** Override to disable even in dev mode */
   enabled?: boolean

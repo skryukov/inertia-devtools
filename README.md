@@ -126,7 +126,7 @@ Every tab has a context-aware Copy button: full request summary, props diff, eve
 
 ```ts
 createInertiaDevtools({
-  styleNonce: 'abc123', // CSP nonce for Shadow DOM styles
+  styleNonce: 'abc123', // CSP nonce for the base stylesheet (see note below)
   enabled: true, // set to false to disable
   docsProvider: 'inertiajs', // or 'inertia-rails'
   router, // pass @inertiajs/core's router to enable Replay (the Vite plugin injects it automatically)
@@ -137,7 +137,11 @@ createInertiaDevtools({
 
 Listens to Inertia DOM events and correlates them into request records by visit id. Client-side visits (`router.push`/`replace`/`replaceProp`/...) arrive via the `inertia:clientVisit` event. Network data (headers, status, body size) comes from Inertia's dev-mode interceptors (`window.__inertia_interceptors__`, exposed when `createInertiaApp`'s `dev` option is on — the default in Vite dev mode), with PerformanceObserver supplying resource timing and acting as the fallback. Nothing is monkey-patched.
 
-The UI renders inside a Shadow DOM -- your app styles are never affected. State is kept in a bounded buffer (200 requests max).
+The UI renders inside a Shadow DOM -- your app styles are never affected.
+
+`styleNonce` covers the devtools' base stylesheet only. Per-component CSS is injected at runtime by Svelte, which sets no nonce and exposes no hook for one, so under a strict `style-src 'nonce-...'` policy (no `unsafe-inline`) the panel renders unstyled and your CSP report-uri will collect violations from it. If you run that policy, keep devtools off those environments for now.
+
+State is kept in a bounded buffer (200 requests max).
 
 In any build the Vite plugin resolves devtools imports to a no-op, so `import 'inertia-devtools'` can stay in your code permanently — zero bytes ship to users. Stripping keys off `vite build`, not off `--mode`: a preview or QA host built with `--mode development` is still a build, and still strips. Devtools appear on the dev server (`vite`) whatever the mode.
 

@@ -110,6 +110,19 @@ describe('redactDeep', () => {
     expect(redactDeep(undefined)).toBe(undefined)
   })
 
+  it('redacts class instances, which JSON.stringify serializes regardless', () => {
+    // A form model or Precognition object is not a plain object, so a
+    // prototype check skipped it — while JSON.stringify happily wrote its
+    // own properties into the export.
+    class LoginForm {
+      email = 'ada@example.com'
+      password = 'LEAK-CLASS'
+    }
+    const out = JSON.stringify(redactDeep(new LoginForm()))
+    expect(out).not.toContain('LEAK-CLASS')
+    expect(out).toContain('ada@example.com')
+  })
+
   it('passes host objects through untouched', () => {
     const file = new File(['x'], 'a.txt')
     const form = new FormData()
@@ -164,5 +177,25 @@ describe('redactExport', () => {
     const input = { csrf_token: 'keep-me' }
     redactExport(input)
     expect(input.csrf_token).toBe('keep-me')
+  })
+})
+
+describe('redaction of non-plain objects', () => {
+  class Creds {
+    user = 'ada'
+    api_token = 'LEAK-INSTANCE'
+  }
+
+  it('redactExport reaches into class instances too', () => {
+    const out = JSON.stringify(redactExport({ form: new Creds() }))
+    expect(out).not.toContain('LEAK-INSTANCE')
+    expect(out).toContain('ada')
+  })
+
+  it('leaves opaque types alone rather than mangling them', () => {
+    const date = new Date(0)
+    expect(redactExport({ at: date }).at).toBe(date)
+    const map = new Map([['token', 'x']])
+    expect(redactExport({ m: map }).m).toBe(map)
   })
 })

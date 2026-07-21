@@ -658,17 +658,25 @@
     gap: 4px;
   }
 
+  /*
+   * Tinted background with the accent as TEXT, not white text on the accent.
+   * White on the lighter accents was ~1.9:1 (yellow) to ~2.5:1 — nowhere near
+   * AA, and feature badges are a headline feature. The accent already meets
+   * contrast against the panel background (that is what the tokens were tuned
+   * for), so using it as the foreground inherits a ratio that passes instead
+   * of inventing a new pairing that does not.
+   */
   .feature-badge {
     font-size: 10px;
     font-weight: 600;
     padding: 2px 7px;
     border-radius: 3px;
-    background: var(--badge-color);
-    color: oklch(1 0 0);
+    background: color-mix(in oklch, var(--badge-color) 16%, transparent);
+    border: 1px solid color-mix(in oklch, var(--badge-color) 38%, transparent);
+    color: var(--badge-color);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     white-space: nowrap;
-    border: none;
     font-family: inherit;
     cursor: pointer;
   }

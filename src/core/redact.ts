@@ -50,7 +50,7 @@ export function redactDeep(value: unknown, depth = 0): unknown {
   if (Array.isArray(value)) {
     return value.map((entry) => redactDeep(entry, depth + 1))
   }
-  if (!isPlainObject(value)) return value
+  if (!isWalkable(value)) return value
 
   const out: Record<string, unknown> = {}
   for (const [key, entry] of Object.entries(value)) {
@@ -85,7 +85,7 @@ function walkForExport(value: unknown, seen: WeakSet<object>): unknown {
   seen.add(value)
 
   if (Array.isArray(value)) return value.map((entry) => walkForExport(entry, seen))
-  if (!isPlainObject(value)) return value
+  if (!isWalkable(value)) return value
 
   const out: Record<string, unknown> = {}
   for (const [key, entry] of Object.entries(value)) {
@@ -94,8 +94,34 @@ function walkForExport(value: unknown, seen: WeakSet<object>): unknown {
   return out
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/**
+ * Types whose innards we deliberately do not walk: binary payloads and host
+ * objects carry no inspectable keys, and `JSON.stringify` does not expand them
+ * either, so skipping them hides nothing.
+ */
+function isOpaqueObject(value: object): boolean {
+  return (
+    value instanceof Date ||
+    value instanceof RegExp ||
+    value instanceof Error ||
+    value instanceof Map ||
+    value instanceof Set ||
+    (typeof Blob !== 'undefined' && value instanceof Blob) ||
+    (typeof FormData !== 'undefined' && value instanceof FormData) ||
+    (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value))
+  )
+}
+
+/**
+ * Anything with own enumerable keys that `JSON.stringify` would serialize.
+ *
+ * This deliberately accepts CLASS INSTANCES, not just object literals. Checking
+ * for `Object.prototype` skipped them — and `JSON.stringify` ignores prototypes
+ * and serializes own properties regardless, so a form model or a Precognition
+ * object walked straight past the redactor and into the export with its
+ * `password` field intact.
+ */
+function isWalkable(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object') return false
-  const proto = Object.getPrototypeOf(value)
-  return proto === Object.prototype || proto === null
+  return !isOpaqueObject(value)
 }
