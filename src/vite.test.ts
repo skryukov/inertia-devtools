@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+
+// No Node types in this package — the plugin (and these tests) run in Node.
+declare const process: { env: Record<string, string | undefined> }
 // Vite's ?raw loader — avoids depending on @types/node just to read a file.
 // oxlint-disable-next-line import/default -- the loader supplies the default export
 import indexSource from './index.ts?raw'
@@ -41,13 +44,27 @@ function transformIn(
   return (plugin.transform as (this: unknown, c: string, i: string) => TransformResult).call(ctx, code, id)
 }
 
-/** Build the plugin and run configResolved — hooks don't use plugin context. */
+/**
+ * Build the plugin and run configResolved — hooks don't use plugin context.
+ *
+ * These tests themselves run under Vitest, and the plugin now strips when it
+ * detects a test runner (so a consumer's component tests don't boot the panel).
+ * The helper therefore clears VITEST while resolving config, so each test
+ * describes the host it means — a real dev server or a real build. The one
+ * test that exercises the guard sets the variable itself.
+ */
 function makePlugin(
   config: { command: 'serve' | 'build'; mode: string },
   options: InertiaDevtoolsPluginOptions = {},
 ): PluginHooks {
   const plugin = inertiaDevtools(options) as unknown as PluginHooks
-  plugin.configResolved(config)
+  const previous = process.env.VITEST
+  Reflect.deleteProperty(process.env, 'VITEST')
+  try {
+    plugin.configResolved(config)
+  } finally {
+    if (previous !== undefined) process.env.VITEST = previous
+  }
   return plugin
 }
 
@@ -267,6 +284,39 @@ describe('inertiaDevtools vite plugin', () => {
     it('never strips on the dev server, whatever the mode', () => {
       const plugin = makePlugin({ command: 'serve', mode: 'production' })
       expect(plugin.resolveId('inertia-devtools', '/src/app.ts')).toBe(INIT_ID)
+    })
+  })
+
+  describe('unknown host / test runner (fail safe)', () => {
+    it('strips when configResolved never runs — a non-Vite Rollup host', () => {
+      // configResolved is Vite-only. A plain Rollup consumer never calls it, so
+      // the plugin keeps its defaults. Those used to mean "development": no
+      // strip plus auto-injection, i.e. a production bundle booting devtools.
+      const plugin = inertiaDevtools() as unknown as PluginHooks
+      expect(plugin.resolveId('inertia-devtools', '/src/app.ts')).toBe(NOOP_ID)
+    })
+
+    it('does not auto-inject when configResolved never runs', () => {
+      const plugin = inertiaDevtools() as unknown as PluginHooks
+      const code = `import { createInertiaApp } from '@inertiajs/react'`
+      expect(plugin.transform(code, '/src/app.tsx')).toBe(undefined)
+    })
+
+    it('strips under Vitest even though the command is serve', () => {
+      // Vitest resolves config with command: 'serve', so without a guard every
+      // jsdom test boots the panel into document.body.
+      const previous = process.env.VITEST
+      process.env.VITEST = 'true'
+      try {
+        const plugin = inertiaDevtools() as unknown as PluginHooks
+        plugin.configResolved(devServer)
+        expect(plugin.resolveId('inertia-devtools', '/src/app.ts')).toBe(NOOP_ID)
+        const code = `import { createInertiaApp } from '@inertiajs/react'`
+        expect(plugin.transform(code, '/src/app.tsx')).toBe(undefined)
+      } finally {
+        if (previous === undefined) Reflect.deleteProperty(process.env, 'VITEST')
+        else process.env.VITEST = previous
+      }
     })
   })
 

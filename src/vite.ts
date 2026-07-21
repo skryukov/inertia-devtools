@@ -80,8 +80,14 @@ function isSsrTransform(ctx: unknown, options: { ssr?: boolean } | undefined): b
  */
 export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plugin {
   const { stripInProduction = true, ...runtimeOptions } = options
-  let isDev = true
-  let strip = false
+  // Fail SAFE, not open. `configResolved` is a Vite-only hook, so a host that
+  // consumes this through the plain Rollup interface never calls it and keeps
+  // whatever these defaults say. They used to say "development": no stripping,
+  // plus auto-injection — a production bundle that imports and boots the
+  // devtools. An unknown host now gets the stripped behaviour and Vite flips
+  // these to the truth in configResolved below.
+  let isDev = false
+  let strip = true
   /**
    * The adapter specifier the app imported `createInertiaApp` from, captured
    * during transform. Preferred over `@inertiajs/core` for the router import:
@@ -103,14 +109,29 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       }
     },
     configResolved(config) {
-      isDev = config.command === 'serve'
+      // Vitest resolves config with command: 'serve' and a non-SSR web
+      // transform, so without this a consumer who adds the plugin gets the
+      // full devtools booted inside every jsdom test: a #inertia-devtools-host
+      // div in document.body breaking innerHTML snapshots, a pagehide listener
+      // per test, and the UI chunk in the test runner. Vitest reads
+      // vite.config.ts, so this is the default outcome, not an edge case.
+      // Read off globalThis rather than a bare `process`: this package ships no
+      // Node types, and unlike entry.ts's NODE_ENV gate nothing textually
+      // replaces this — the plugin runs in Node, where the global really exists.
+      const isTestRunner = Boolean(
+        (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.VITEST,
+      )
+      isDev = config.command === 'serve' && !isTestRunner
       // Any build strips, whatever the mode. `--mode development` used to keep
       // devtools, which meant a QA/preview host built that way served a live,
       // mounting panel to every visitor — the plugin's own injected `_init()`
       // call bypasses the runtime NODE_ENV gate, so nothing else caught it.
       // Shipping devtools in a build is now one explicit opt-in, not an
       // implicit consequence of a flag chosen for unrelated reasons.
-      strip = stripInProduction && config.command === 'build'
+      // The test runner strips too: suppressing auto-injection is not enough,
+      // since a manual `import 'inertia-devtools'` in app code under test would
+      // otherwise still pull in and boot the real thing.
+      strip = stripInProduction && (config.command === 'build' || isTestRunner)
     },
     resolveId(source, importer) {
       if (source === 'inertia-devtools') {
