@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+// Vite's ?raw loader — avoids depending on @types/node just to read a file.
+// oxlint-disable-next-line import/default -- the loader supplies the default export
+import indexSource from './index.ts?raw'
 import { inertiaDevtools, type InertiaDevtoolsPluginOptions } from './vite'
 
 const INIT_ID = '\0inertia-devtools-init'
@@ -7,11 +10,26 @@ const NOOP_ID = '\0inertia-devtools-noop'
 interface PluginHooks {
   configResolved(config: { command: 'serve' | 'build'; mode: string }): void
   resolveId(source: string, importer?: string): string | null
-  load(id: string): string | null
+  load(id: string): Promise<string | null> | string | null
   transform(code: string, id: string, options?: { ssr?: boolean }): { code: string; map: null } | undefined
 }
 
 type TransformResult = { code: string; map: null } | undefined
+
+/**
+ * Drive the async `load` hook with a controllable resolver, standing in for
+ * Rollup's `this.resolve`. `resolvable` lists the specifiers this fake project
+ * layout can resolve — the default is a flat `node_modules` where everything
+ * is reachable.
+ */
+function loadIn(
+  plugin: PluginHooks,
+  id: string,
+  resolvable: string[] = ['@inertiajs/core', '@inertiajs/react', '@inertiajs/svelte', '@inertiajs/vue3'],
+): Promise<string | null> {
+  const ctx = { resolve: (source: string) => (resolvable.includes(source) ? { id: source } : null) }
+  return Promise.resolve((plugin.load as (this: unknown, i: string) => Promise<string | null>).call(ctx, id))
+}
 
 /** Call transform with a Vite plugin context (environment-aware transforms). */
 function transformIn(
@@ -49,24 +67,65 @@ describe('inertiaDevtools vite plugin', () => {
       expect(plugin.resolveId('inertia-devtools')).toBe(null)
     })
 
-    it('ignores unrelated modules', () => {
+    it('ignores unrelated modules', async () => {
       const plugin = makePlugin(devServer)
       expect(plugin.resolveId('svelte', '/src/app.ts')).toBe(null)
-      expect(plugin.load('/src/app.ts')).toBe(null)
+      expect(await loadIn(plugin, '/src/app.ts')).toBe(null)
     })
 
-    it('serves an init module that forwards options to createInertiaDevtools', () => {
+    it('serves an init module that forwards options to createInertiaDevtools', async () => {
       const plugin = makePlugin(devServer, { docsProvider: 'inertia-rails' })
-      const code = plugin.load(INIT_ID)
+      const code = await loadIn(plugin, INIT_ID)
       expect(code).toContain(`export { createInertiaDevtools } from 'inertia-devtools'`)
       expect(code).toContain(`_init(Object.assign({"docsProvider":"inertia-rails"}, { router: __router }))`)
     })
 
-    it('imports the app router and passes it to the init options', () => {
+    it('imports the app router and passes it to the init options', async () => {
       const plugin = makePlugin(devServer)
-      const code = plugin.load(INIT_ID)
+      const code = await loadIn(plugin, INIT_ID)
       expect(code).toContain(`import { router as __router } from '@inertiajs/core'`)
       expect(code).toContain(`_init(Object.assign({}, { router: __router }))`)
+    })
+
+    it('imports the router from the adapter the app actually uses', async () => {
+      // An app depends on its adapter, not on @inertiajs/core. Under pnpm /
+      // Yarn PnP / any isolated layout, core is unreachable from the project
+      // root — hard-coding it made the init module unresolvable, which took
+      // the whole app down with a 500.
+      const plugin = makePlugin(devServer)
+      plugin.transform(`import { createInertiaApp } from '@inertiajs/react'`, '/src/app.tsx')
+      const code = await loadIn(plugin, INIT_ID, ['@inertiajs/react'])
+      expect(code).toContain(`import { router as __router } from '@inertiajs/react'`)
+      expect(code).toContain(`_init(Object.assign({}, { router: __router }))`)
+    })
+
+    it('falls back to @inertiajs/core when no adapter was seen', async () => {
+      // Manual `import 'inertia-devtools'` with no transform to learn from.
+      const plugin = makePlugin(devServer)
+      const code = await loadIn(plugin, INIT_ID, ['@inertiajs/core'])
+      expect(code).toContain(`import { router as __router } from '@inertiajs/core'`)
+    })
+
+    it('omits the router rather than emitting an unresolvable import', async () => {
+      // Nothing resolvable: devtools still load, only replay/reload go dark.
+      // The old behaviour emitted the import anyway and broke the app.
+      const plugin = makePlugin(devServer)
+      const code = await loadIn(plugin, INIT_ID, [])
+      expect(code).not.toContain('__router')
+      expect(code).toContain('_init({})')
+      expect(code).toContain(`export { createInertiaDevtools } from 'inertia-devtools'`)
+    })
+
+    it('treats a throwing resolver as unresolvable instead of failing the build', async () => {
+      const plugin = makePlugin(devServer)
+      const ctx = {
+        resolve: () => {
+          throw new Error('resolver exploded')
+        },
+      }
+      const load = plugin.load as (this: unknown, i: string) => Promise<string | null>
+      const code = await load.call(ctx, INIT_ID)
+      expect(code).toContain('_init({})')
     })
 
     it('appends the devtools import so original line numbers survive', () => {
@@ -142,11 +201,37 @@ describe('inertiaDevtools vite plugin', () => {
       expect(plugin.resolveId('inertia-devtools')).toBe(NOOP_ID)
     })
 
-    it('serves a no-op module with stubs for every public value export', () => {
+    it('stubs every value export declared in index.ts (derived, cannot drift)', async () => {
+      // The old version of this test hardcoded the same three names as the
+      // implementation, so it asserted the code against itself and missed
+      // `createInRealmClient` — which failed real production builds. Read the
+      // public surface from source instead.
+      const index = indexSource
+      const exported = [...index.matchAll(/^export \{ ([^}]+) \} from/gm)].flatMap((m) =>
+        m[1].split(',').map(
+          (n: string) =>
+            n
+              .trim()
+              .split(/\s+as\s+/)
+              .pop()!,
+        ),
+      )
+      expect(exported.length).toBeGreaterThan(0)
+
+      const code = (await loadIn(makePlugin(prodBuild), NOOP_ID))!
+      for (const name of exported) {
+        expect(code, `no-op module is missing a stub for "${name}"`).toMatch(
+          new RegExp(`export (?:function|class|const) ${name}\\b`),
+        )
+      }
+    })
+
+    it('serves a no-op module with stubs for every public value export', async () => {
       const plugin = makePlugin(prodBuild)
-      const code = plugin.load(NOOP_ID)
+      const code = await loadIn(plugin, NOOP_ID)
       expect(code).toContain('export function createInertiaDevtools() {}')
       expect(code).toContain('export function startCapture()')
+      expect(code).toContain('export function createInRealmClient()')
       expect(code).toContain('export class DevToolsStore {}')
     })
 
@@ -163,9 +248,20 @@ describe('inertiaDevtools vite plugin', () => {
   })
 
   describe('command/mode semantics', () => {
-    it('keeps devtools in `vite build --mode development`', () => {
+    it('strips `vite build --mode development` too — a build is a build', () => {
+      // Regression: this used to return INIT_ID, so a preview/QA host built
+      // with --mode development served a live, mounting devtools panel. The
+      // injected _init() call bypasses the runtime NODE_ENV gate, so stripping
+      // is the only thing standing between that flag and a public panel.
       const plugin = makePlugin({ command: 'build', mode: 'development' })
-      expect(plugin.resolveId('inertia-devtools', '/src/app.ts')).toBe(INIT_ID)
+      expect(plugin.resolveId('inertia-devtools', '/src/app.ts')).toBe(NOOP_ID)
+    })
+
+    it('injects on the dev server whatever the mode', () => {
+      // `vite --mode staging` is still a dev server; devtools must appear.
+      const plugin = makePlugin({ command: 'serve', mode: 'staging' })
+      const code = `import { createInertiaApp } from '@inertiajs/react'`
+      expect(plugin.transform(code, '/src/app.tsx')).not.toBe(undefined)
     })
 
     it('never strips on the dev server, whatever the mode', () => {
@@ -175,15 +271,15 @@ describe('inertiaDevtools vite plugin', () => {
   })
 
   describe('stripInProduction: false', () => {
-    it('keeps devtools in production builds', () => {
+    it('keeps devtools in production builds', async () => {
       const plugin = makePlugin(prodBuild, { stripInProduction: false })
       expect(plugin.resolveId('inertia-devtools', '/src/app.ts')).toBe(INIT_ID)
-      expect(plugin.load(INIT_ID)).toContain(`export { createInertiaDevtools } from 'inertia-devtools'`)
+      expect(await loadIn(plugin, INIT_ID)).toContain(`export { createInertiaDevtools } from 'inertia-devtools'`)
     })
 
-    it('omits stripInProduction from the runtime options', () => {
+    it('omits stripInProduction from the runtime options', async () => {
       const plugin = makePlugin(prodBuild, { stripInProduction: false, docsProvider: 'inertiajs' })
-      const code = plugin.load(INIT_ID)
+      const code = await loadIn(plugin, INIT_ID)
       expect(code).toContain(`_init(Object.assign({"docsProvider":"inertiajs"}, { router: __router }))`)
       expect(code).not.toContain('stripInProduction')
     })

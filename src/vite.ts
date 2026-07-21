@@ -23,6 +23,7 @@ const NOOP_ID = '\0inertia-devtools-noop'
 const NOOP_MODULE = [
   'export function createInertiaDevtools() {}',
   'export function startCapture() { return () => {} }',
+  'export function createInRealmClient() { return undefined }',
   'export class DevToolsStore {}',
 ].join('\n')
 
@@ -33,7 +34,31 @@ const NOOP_MODULE = [
  * check misses whenever the adapter is workspace-linked or `npm link`ed — the
  * injected import then resolved from the adapter's directory and blew up.
  */
-const IMPORTS_CREATE_INERTIA_APP = /import\s*\{[^}]*\bcreateInertiaApp\b[^}]*\}\s*from\s*['"]@inertiajs\/[^'"]+['"]/
+const IMPORTS_CREATE_INERTIA_APP = /import\s*\{[^}]*\bcreateInertiaApp\b[^}]*\}\s*from\s*['"](@inertiajs\/[^'"]+)['"]/
+
+/**
+ * First candidate the bundler can actually resolve, or undefined. A throwing
+ * resolver counts as "not resolvable" — this runs inside the host app's build
+ * and must never be the thing that fails it.
+ */
+async function firstResolvable(
+  candidates: Array<string | undefined>,
+  resolve: (source: string) => Promise<{ id: string } | null> | { id: string } | null,
+): Promise<string | undefined> {
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    try {
+      // Sequential on purpose: this is a preference order, not a race. Resolving
+      // them in parallel would probe @inertiajs/core even when the adapter
+      // already answered, which is the exact lookup that fails under pnpm.
+      // eslint-disable-next-line no-await-in-loop
+      if (await resolve(candidate)) return candidate
+    } catch {
+      /* treat as unresolvable and try the next */
+    }
+  }
+  return undefined
+}
 
 /**
  * Vite 6+ routes transforms through named environments; older Vite passes
@@ -57,6 +82,15 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
   const { stripInProduction = true, ...runtimeOptions } = options
   let isDev = true
   let strip = false
+  /**
+   * The adapter specifier the app imported `createInertiaApp` from, captured
+   * during transform. Preferred over `@inertiajs/core` for the router import:
+   * apps depend on the adapter, and every adapter re-exports `router`, so this
+   * is the specifier guaranteed to resolve. `@inertiajs/core` is only reachable
+   * when a flat `node_modules` hoists it — under pnpm, Yarn PnP, or any
+   * isolated layout it is not, and hard-coding it broke the whole app.
+   */
+  let adapterSpecifier: string | undefined
 
   return {
     name: 'inertia-devtools',
@@ -69,8 +103,14 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       }
     },
     configResolved(config) {
-      isDev = config.mode === 'development'
-      strip = stripInProduction && config.command === 'build' && !isDev
+      isDev = config.command === 'serve'
+      // Any build strips, whatever the mode. `--mode development` used to keep
+      // devtools, which meant a QA/preview host built that way served a live,
+      // mounting panel to every visitor — the plugin's own injected `_init()`
+      // call bypasses the runtime NODE_ENV gate, so nothing else caught it.
+      // Shipping devtools in a build is now one explicit opt-in, not an
+      // implicit consequence of a flag chosen for unrelated reasons.
+      strip = stripInProduction && config.command === 'build'
     },
     resolveId(source, importer) {
       if (source === 'inertia-devtools') {
@@ -84,22 +124,37 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       }
       return null
     },
-    load(id) {
+    async load(id) {
       if (id === NOOP_ID) {
         return NOOP_MODULE
       }
       if (id === INIT_ID) {
+        // Probe rather than assume: the adapter first (an app always depends on
+        // it), then core for the manual-import path where no transform ran.
+        const routerSpecifier = await firstResolvable([adapterSpecifier, '@inertiajs/core'], (source) =>
+          this.resolve(source),
+        )
         const optionsJson = JSON.stringify(runtimeOptions)
         // This module executes inside the APP's module graph, so it can import
         // the app's own router instance (the devtools bundle itself must never
         // import @inertiajs/core — peer dep, would double-bundle) and hand it
         // to the devtools for actions (replay/reload).
-        return [
+        const lines = [
           `export { createInertiaDevtools } from 'inertia-devtools'`,
           `import { createInertiaDevtools as _init } from 'inertia-devtools'`,
-          `import { router as __router } from '@inertiajs/core'`,
-          `_init(Object.assign(${optionsJson}, { router: __router }))`,
-        ].join('\n')
+        ]
+        if (routerSpecifier) {
+          lines.push(
+            `import { router as __router } from '${routerSpecifier}'`,
+            `_init(Object.assign(${optionsJson}, { router: __router }))`,
+          )
+        } else {
+          // Nothing resolvable to import the router from. Devtools still work;
+          // only replay/reload go dark. Failing the build here would mean the
+          // plugin bricks the app it is meant to observe.
+          lines.push(`_init(${optionsJson})`)
+        }
+        return lines.join('\n')
       }
       return null
     },
@@ -114,7 +169,11 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       // Auto-inject into EVERY module that sets up Inertia — init is
       // idempotent, and a single-claim slot broke multi-entry apps (whichever
       // entry transformed first stole the injection).
-      if (IMPORTS_CREATE_INERTIA_APP.test(code)) {
+      const match = IMPORTS_CREATE_INERTIA_APP.exec(code)
+      if (match) {
+        // Remember which adapter this app uses so the init module imports the
+        // router from a specifier that is actually resolvable for it.
+        adapterSpecifier ??= match[1]
         // Manual `import 'inertia-devtools'` already present — nothing to add
         if (code.includes('inertia-devtools')) return
         // Appended, not prepended: ESM import hoisting still runs it before
