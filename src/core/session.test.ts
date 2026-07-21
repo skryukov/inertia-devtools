@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { summarizeRequest, saveSession, loadSession, clearSession } from './session'
 import type { RequestRecord } from './types'
+import { DevToolsStore } from './store'
 
 function makeRequest(overrides: Partial<RequestRecord> = {}): RequestRecord {
   return {
@@ -156,5 +157,56 @@ describe('clearSession', () => {
 
   it('does not throw when key does not exist', () => {
     expect(() => clearSession()).not.toThrow()
+  })
+})
+
+/**
+ * `sessionStorage` is an accessor, so `typeof sessionStorage` INVOKES it and
+ * throws SecurityError when site data is blocked — which is what Safari
+ * "Block All Cookies", partitioned third-party iframes and cookie-blocked
+ * origins effectively do. Replacing the global with a throwing getter
+ * reproduces that.
+ */
+function withBlockedStorage(fn: () => void) {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  Object.defineProperty(globalThis, 'sessionStorage', {
+    get() {
+      throw new Error('SecurityError: Access is denied for this document.')
+    },
+    configurable: true,
+  })
+  try {
+    fn()
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'sessionStorage', original)
+    else Reflect.deleteProperty(globalThis, 'sessionStorage')
+  }
+}
+
+describe('blocked storage (Safari "Block All Cookies", partitioned iframes)', () => {
+  it('saveSession does not throw', () => {
+    withBlockedStorage(() => expect(() => saveSession([])).not.toThrow())
+  })
+
+  it('loadSession returns null instead of throwing', () => {
+    withBlockedStorage(() => {
+      expect(() => loadSession()).not.toThrow()
+      expect(loadSession()).toBeNull()
+    })
+  })
+
+  it('clearSession does not throw — it runs from the panel Clear button', () => {
+    withBlockedStorage(() => expect(() => clearSession()).not.toThrow())
+  })
+
+  it('the DevToolsStore constructor survives, so init() never reaches the host app', () => {
+    withBlockedStorage(() => {
+      expect(() => new DevToolsStore()).not.toThrow()
+    })
+  })
+
+  it('store.clear() survives — it calls clearSession()', () => {
+    const store = new DevToolsStore()
+    withBlockedStorage(() => expect(() => store.clear()).not.toThrow())
   })
 })

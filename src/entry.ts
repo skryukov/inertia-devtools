@@ -37,8 +37,25 @@ function init(options: DevToolsOptions): void {
   initialized = true
   window.__INERTIA_DEVTOOLS__ = true
 
-  const store = new DevToolsStore(options)
-  window.__INERTIA_DEVTOOLS_STORE__ = store
+  // Guarded, not bare: the constructor reads persisted state, and storage
+  // access throws outright when site data is blocked (Safari "Block All
+  // Cookies", partitioned iframes). A throw here escapes init() ->
+  // createInertiaDevtools() -> the plugin's injected _init() and lands in the
+  // host app's entrypoint at module-eval time. Its own try because there is
+  // nothing to show without a store — capture failing below is survivable,
+  // this is not.
+  let store: DevToolsStore
+  try {
+    store = new DevToolsStore(options)
+    window.__INERTIA_DEVTOOLS_STORE__ = store
+  } catch (err) {
+    if (typeof console !== 'undefined') {
+      console.groupCollapsed('[inertia-devtools] Failed to start — devtools are disabled for this page')
+      console.error(err)
+      console.groupEnd()
+    }
+    return
+  }
 
   // Capture must never take the host app down with it
   try {
