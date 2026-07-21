@@ -10,6 +10,7 @@ import type {
 } from './types'
 import type { NetworkTiming } from './network'
 import { visitUuid, wireBodySize } from './wire'
+import { redactDeep, redactHeaders } from './redact'
 import { extractFeatures, extractPageFeatures } from './features'
 import { computeDiagnostics } from './diagnostics'
 import { normalizeUrl } from './url'
@@ -129,7 +130,7 @@ export class Correlator {
   attachWireRequest(uuid: string, request: WireRequestData): RequestRecord | null {
     const record = this.resolveByUuid(uuid)
     if (!record) return null
-    record.wire = { ...record.wire, request }
+    record.wire = { ...record.wire, request: { ...request, headers: redactHeaders(request.headers) } }
     return record
   }
 
@@ -137,7 +138,7 @@ export class Correlator {
   attachWireResponse(uuid: string, response: WireResponseData): RequestRecord | null {
     const record = this.resolveByUuid(uuid)
     if (!record) return null
-    record.wire = { ...record.wire, response }
+    record.wire = { ...record.wire, response: { ...response, headers: redactHeaders(response.headers) } }
     if (record.status === undefined && response.status !== undefined) {
       record.status = response.status
     }
@@ -765,7 +766,7 @@ export class Correlator {
   private wireResponseFromPayload(response: Record<string, unknown>, timestamp: number): WireResponseData {
     return {
       status: typeof response.status === 'number' ? response.status : undefined,
-      headers: { ...(response.headers as Record<string, string> | undefined) },
+      headers: redactHeaders({ ...(response.headers as Record<string, string> | undefined) }),
       bodySize: wireBodySize(response.data),
       finishedAt: timestamp,
     }
@@ -808,7 +809,9 @@ export class Correlator {
       if (typeof v === 'object' && v !== null && !Array.isArray(v) && Object.keys(v).length === 0) continue
       opts[k] = v
     }
-    return Object.keys(opts).length > 0 ? opts : undefined
+    // `data` is the raw request body and `headers` the caller's headers — both
+    // routinely carry credentials, and both reach the clipboard via the export.
+    return Object.keys(opts).length > 0 ? (redactDeep(opts) as Record<string, unknown>) : undefined
   }
 
   // --- Classification helpers ---

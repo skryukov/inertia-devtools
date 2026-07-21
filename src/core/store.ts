@@ -15,6 +15,7 @@ import type {
 import type { NetworkTiming } from './network'
 import { saveSession, loadSession, clearSession } from './session'
 import { TOO_DEEP } from './utils'
+import { REDACTED, isSensitiveKey } from './redact'
 
 const MAX_CLONE_DEPTH = 10
 
@@ -322,7 +323,12 @@ export class DevToolsStore {
         // Skip functions and circular-prone properties
         if (typeof v === 'function') continue
         if (k === 'cancelToken' || k === 'signal') continue
-        result[k] = this.safeClone(v, depth - 1)
+        // Visit details carry the request body and headers verbatim, so the
+        // raw events are a third route for credentials into the export
+        // (alongside visitOptions and wire). Masking during the existing walk
+        // costs no extra traversal. `page` takes the structuredClone fast path
+        // above and is deliberately untouched — server props are the product.
+        result[k] = isSensitiveKey(k) ? REDACTED : this.safeClone(v, depth - 1)
       }
       return result
     } catch {
