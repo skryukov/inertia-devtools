@@ -41,16 +41,19 @@
     showToast('Replaying...')
   }
 
-  function handleCopy() {
+  async function handleCopy() {
     if (!ctx.selectedRequest) return
-    copyToClipboard(copySource.format(ctx.selectedRequest))
-    showToast('Copied!')
+    const ok = await copyToClipboard(copySource.format(ctx.selectedRequest))
+    // Say what happened. Clipboard writes fail on non-secure origins and from
+    // the unfocused PiP window, and claiming success there sends someone off
+    // to paste nothing.
+    showToast(ok ? 'Copied!' : 'Copy failed — clipboard unavailable')
   }
 
-  function handleCopyJSON() {
+  async function handleCopyJSON() {
     if (!ctx.selectedRequest) return
-    copyToClipboard(requestToJSON(ctx.selectedRequest))
-    showToast('Copied JSON!')
+    const ok = await copyToClipboard(requestToJSON(ctx.selectedRequest))
+    showToast(ok ? 'Copied JSON!' : 'Copy failed — clipboard unavailable')
   }
 
   function showToast(message: string) {

@@ -152,17 +152,15 @@
   })
 
   // --- Copy actions ---
-  function handleCopyRaw() {
+  async function handleCopyRaw() {
     // Bypasses markdown.ts, so it needs the export redaction of its own —
     // this button puts props straight on the clipboard.
-    copyToClipboard(JSON.stringify(redactExport(page), null, 2))
-    onCopied?.()
+    if (await copyToClipboard(JSON.stringify(redactExport(page), null, 2))) onCopied?.()
   }
 
-  function handleCopyDiff() {
+  async function handleCopyDiff() {
     if (!request) return
-    copyToClipboard(diffToMarkdown(request))
-    onCopied?.()
+    if (await copyToClipboard(diffToMarkdown(request))) onCopied?.()
   }
 </script>
 
