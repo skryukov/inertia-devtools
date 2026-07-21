@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { startInterceptorCapture } from './interceptors'
+import { startCapture } from './capture'
 import { DevToolsStore } from './store'
 
 type RequestHandler = (visit: unknown, config: unknown) => unknown
@@ -101,7 +102,7 @@ describe('startInterceptorCapture', () => {
     expect(store.getState().networkCaptureMode).toBe('fallback')
   })
 
-  it('attaches request and response wire data to the right record among concurrent visits', () => {
+  it('attaches request and response wire data to the right record among concurrent visits', async () => {
     const fake = makeFakeInterceptors()
     window.__inertia_interceptors__ = fake
     startInterceptorCapture(store)
@@ -121,6 +122,8 @@ describe('startInterceptorCapture', () => {
       data: '{"component":"Users"}',
       headers: { 'x-inertia': 'true' },
     })
+    // The request attach is queued behind capture's microtask flush
+    await Promise.resolve()
 
     const requests = store.getState().requests
     const recordA = requests.find((r) => r.inertiaVisitId === 'v-a')!
@@ -134,6 +137,28 @@ describe('startInterceptorCapture', () => {
     expect(recordB.wire?.response).toMatchObject({ status: 200, headers: { 'x-inertia': 'true' } })
     expect(recordB.wire?.response?.bodySize).toBe('{"component":"Users"}'.length)
     expect(recordB.status).toBe(200)
+  })
+
+  it('attaches wire data queued behind capture-deferred before/start from the same task', async () => {
+    const fake = makeFakeInterceptors()
+    window.__inertia_interceptors__ = fake
+    startInterceptorCapture(store)
+    const stopCapture = startCapture(store)
+
+    // Mirrors Request.send(): before/start dispatch and the request interceptor
+    // all run synchronously in one task, before capture's microtask flush.
+    const visit = makeVisit('v-sync')
+    document.dispatchEvent(new CustomEvent('inertia:before', { detail: { visit } }))
+    document.dispatchEvent(new CustomEvent('inertia:start', { detail: { visit } }))
+    fake.requestHandlers[0](visit, { method: 'get', url: 'http://localhost/users', headers: {} })
+
+    await Promise.resolve()
+
+    const [record] = store.getState().requests
+    expect(record.inertiaVisitId).toBe('v-sync')
+    expect(record.wire?.request).toBeDefined()
+
+    stopCapture()
   })
 
   it('returns config and response unchanged (pure observation)', () => {
@@ -168,12 +193,13 @@ describe('startInterceptorCapture', () => {
     expect(() => fake.responseHandlers[0](makeVisit('v-1'), response)).not.toThrow()
   })
 
-  it('ignores wire data for unknown visit ids without crashing', () => {
+  it('ignores wire data for unknown visit ids without crashing', async () => {
     const fake = makeFakeInterceptors()
     window.__inertia_interceptors__ = fake
     startInterceptorCapture(store)
 
     expect(() => fake.requestHandlers[0](makeVisit('v-unknown'), { method: 'get', url: '', headers: {} })).not.toThrow()
+    await Promise.resolve()
     expect(store.getState().requests).toHaveLength(0)
   })
 

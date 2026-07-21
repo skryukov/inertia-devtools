@@ -8,9 +8,13 @@ import { visitUuid, wireBodySize } from './wire'
  * Inertia >= 3.4 exposes `window.__inertia_interceptors__` when
  * `createInertiaApp({ dev })` is truthy (default: import.meta.env.DEV).
  * The request interceptor fires for all router traffic (visits, prefetches,
- * deferred reloads, polls); the response interceptor fires only for 2xx
- * Inertia responses — prefetch responses and HTTP exceptions are extracted
- * from their lifecycle events in the correlator instead.
+ * deferred reloads, polls). The response interceptor runs inside
+ * Response.setPage() (3.4.0 dist: `interceptors.processResponse`), so it fires
+ * for any Inertia response that goes on to update the page — including status
+ * >= 400 when the cancelable `inertia:httpException` event isn't prevented —
+ * but not for non-Inertia responses, prefetch fills, or responses that skip
+ * setPage. The correlator additionally extracts prefetch responses and HTTP
+ * exceptions from their lifecycle events.
  *
  * Subscription is lazy: `exposeInterceptors()` runs synchronously at the top
  * of `createInertiaApp()`, which is AFTER devtools init on the injected-import
@@ -69,12 +73,23 @@ function subscribe(store: DevToolsStore): StopFunction | null {
       try {
         const uuid = visitUuid(visit)
         if (uuid) {
-          store.attachWireRequest(uuid, {
+          const request = {
             method: String(config?.method ?? 'get').toUpperCase(),
             url: String(config?.url ?? ''),
             // copy: other interceptors may mutate the config object after us
             headers: { ...config?.headers },
             startedAt: performance.now(),
+          }
+          // This handler runs synchronously inside Request.send(), in the same
+          // task as the before/start events — which capture.ts holds in its
+          // microtask buffer. Queue the attach behind that flush so the record
+          // exists by the time it resolves.
+          queueMicrotask(() => {
+            try {
+              store.attachWireRequest(uuid, request)
+            } catch {
+              /* observe only */
+            }
           })
         }
       } catch {

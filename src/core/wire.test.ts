@@ -29,6 +29,11 @@ describe('wireBodySize', () => {
     expect(wireBodySize(sample)).toBe(new TextEncoder().encode(sample).length)
   })
 
+  it('measures parsed objects in UTF-8 bytes, not UTF-16 code units', () => {
+    // "é" is 1 code unit but 2 UTF-8 bytes; JSON: {"a":"é"} = 9 chars, 10 bytes
+    expect(wireBodySize({ a: 'é' })).toBe(10)
+  })
+
   it('estimates parsed objects via JSON length (prefetched event payloads)', () => {
     expect(wireBodySize({ a: 1 })).toBe('{"a":1}'.length)
   })

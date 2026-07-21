@@ -12,13 +12,15 @@ export function visitUuid(visit: { id?: unknown } | undefined): string | undefin
 /**
  * Approximate byte size of a response body. Strings are measured as UTF-8
  * without allocating a copy (this runs inside the host app's response chain);
- * already-parsed objects (prefetched event payloads) fall back to JSON length.
+ * already-parsed objects (prefetched event payloads) are re-serialized and
+ * measured the same way — string .length is UTF-16 code units, not bytes.
  */
 export function wireBodySize(data: unknown): number | undefined {
   if (typeof data === 'string') return utf8Length(data)
   if (data != null && typeof data === 'object') {
     try {
-      return JSON.stringify(data)?.length
+      const json = JSON.stringify(data)
+      return json === undefined ? undefined : utf8Length(json)
     } catch {
       return undefined
     }

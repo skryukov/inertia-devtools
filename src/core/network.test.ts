@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { startNetworkCapture, type NetworkTiming } from './network'
 
-function fireEntries(entries: Partial<PerformanceResourceTiming>[]) {
+// serverTiming is widened to plain objects — PerformanceServerTiming requires toJSON.
+type FakeEntry = Partial<Omit<PerformanceResourceTiming, 'serverTiming'>> & {
+  serverTiming?: { name: string; duration: number; description: string }[]
+}
+
+function fireEntries(entries: FakeEntry[]) {
   const cb = (globalThis as Record<string, unknown>).__perfObserverCb as (list: PerformanceObserverEntryList) => void
   cb({
     getEntries: () =>
@@ -111,6 +116,54 @@ describe('startNetworkCapture', () => {
 
     expect(captured).toHaveLength(1)
     expect(captured[0].startedAt).toBe(50)
+  })
+
+  it('captures Server-Timing metrics when present', () => {
+    fireEntries([
+      {
+        name: 'http://localhost/inertia/users',
+        initiatorType: 'fetch',
+        startTime: 100,
+        duration: 35,
+        serverTiming: [
+          { name: 'db', duration: 12.3, description: 'SELECT queries' },
+          { name: 'app', duration: 20, description: '' },
+        ],
+      },
+    ])
+
+    expect(captured).toHaveLength(1)
+    expect(captured[0].serverTiming).toEqual([
+      { name: 'db', duration: 12.3, description: 'SELECT queries' },
+      { name: 'app', duration: 20, description: '' },
+    ])
+  })
+
+  it('omits serverTiming when the entry exposes none', () => {
+    fireEntries([
+      // Cross-origin without Timing-Allow-Origin — empty array
+      { name: 'http://localhost/inertia/users', initiatorType: 'fetch', serverTiming: [] },
+      // Entry without the field at all
+      { name: 'http://localhost/inertia/roles', initiatorType: 'fetch' },
+    ])
+
+    expect(captured).toHaveLength(2)
+    expect(captured[0].serverTiming).toBeUndefined()
+    expect(captured[1].serverTiming).toBeUndefined()
+  })
+
+  it('captures responseStatus when the entry exposes it', () => {
+    fireEntries([
+      { name: 'http://localhost/inertia/users', initiatorType: 'fetch', responseStatus: 409 },
+      // 0 means unavailable (cross-origin / unsupported browser)
+      { name: 'http://localhost/inertia/roles', initiatorType: 'fetch', responseStatus: 0 },
+      { name: 'http://localhost/inertia/teams', initiatorType: 'fetch' },
+    ])
+
+    expect(captured).toHaveLength(3)
+    expect(captured[0].responseStatus).toBe(409)
+    expect(captured[1].responseStatus).toBeUndefined()
+    expect(captured[2].responseStatus).toBeUndefined()
   })
 
   it('disconnects observer on teardown', () => {
