@@ -1633,6 +1633,36 @@ describe('Correlator', () => {
       expect(record!.page).toEqual(updatedPage)
     })
 
+    it('gives client visits diagnostics — the only handler that never computed them', () => {
+      // handleClientVisit was the one handler that skipped computeDiagnostics on
+      // BOTH paths, so every router.replace()/replaceProp() visit was inserted
+      // with `diagnostics: []` and stayed that way. detectHistoryReplace's first
+      // branch was therefore unreachable in production while its unit test
+      // passed — the rule was covered and dead at the same time.
+      const initialPage = makePage({ props: { count: 1 } })
+      correlator.processEvent(makeEvent('inertia:navigate', { page: initialPage }, 50))
+
+      const replaced = correlator.processEvent(
+        makeEvent(
+          'inertia:clientVisit',
+          { page: makePage({ props: { count: 2 } }), replace: true, visitId: 'c-1' },
+          100,
+        ),
+      )
+      expect(replaced!.diagnostics.map((d) => d.id)).toContain('history-replace')
+
+      // The new-record path AND the adopt-an-existing-record path both funnel.
+      correlator.processEvent(makeEvent('inertia:navigate', { page: initialPage, visitId: 'c-2' }, 200))
+      const adopted = correlator.processEvent(
+        makeEvent(
+          'inertia:clientVisit',
+          { page: makePage({ props: { count: 3 } }), replace: true, visitId: 'c-2' },
+          201,
+        ),
+      )
+      expect(adopted!.diagnostics.map((d) => d.id)).toContain('history-replace')
+    })
+
     it('ignores clientVisit without a page payload', () => {
       const record = correlator.processEvent(
         makeEvent('inertia:clientVisit', { replace: false, visitId: 'client-3' }, 100),

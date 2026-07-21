@@ -79,6 +79,42 @@ export function redactExport<T>(value: T): T {
   return walkForExport(value, new WeakSet()) as T
 }
 
+/** Keys whose string values are URLs, so their query strings get masked too. */
+const URL_KEY = /^(url|redirectUrl|href|location)$/
+
+/**
+ * Mask sensitive query parameters, keeping the parameter NAMES visible.
+ *
+ * Password-reset links, magic-link callbacks and signed S3 URLs put the
+ * credential in the query string, and a URL is the one field every export path
+ * emits — `record.url`, `wire.request.url`, `redirectUrl`. Seeing that a
+ * `?token=` was present is the debuggable part; its value is not.
+ *
+ * Relative URLs are the norm here, so parsing goes through a dummy base and the
+ * origin is stripped back off. Anything unparseable is returned untouched
+ * rather than mangled — this must never turn a URL into noise.
+ */
+export function redactUrl(url: string): string {
+  const queryStart = url.indexOf('?')
+  if (queryStart === -1) return url
+  try {
+    const base = 'http://redact.invalid'
+    const parsed = new URL(url, base)
+    // Collected before mutating: `set()` rewrites the same collection `keys()`
+    // is walking.
+    const sensitive: string[] = []
+    for (const key of parsed.searchParams.keys()) {
+      if (isSensitiveKey(key)) sensitive.push(key)
+    }
+    if (sensitive.length === 0) return url
+    for (const key of sensitive) parsed.searchParams.set(key, REDACTED)
+    const rebuilt = parsed.toString()
+    return url.startsWith(parsed.origin) ? rebuilt : rebuilt.slice(parsed.origin.length)
+  } catch {
+    return url
+  }
+}
+
 /**
  * `seen` tracks the current PATH, not every object ever visited — so it is
  * cleaned up on the way back out.
@@ -101,7 +137,13 @@ function walkForExport(value: unknown, seen: WeakSet<object>): unknown {
 
     const out: Record<string, unknown> = {}
     for (const [key, entry] of Object.entries(value)) {
-      out[key] = isSensitiveKey(key) ? REDACTED : walkForExport(entry, seen)
+      if (isSensitiveKey(key)) {
+        out[key] = REDACTED
+      } else if (URL_KEY.test(key) && typeof entry === 'string') {
+        out[key] = redactUrl(entry)
+      } else {
+        out[key] = walkForExport(entry, seen)
+      }
     }
     return out
   } finally {

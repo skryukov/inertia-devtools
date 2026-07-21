@@ -16,6 +16,17 @@
   // svelte-ignore state_referenced_locally
   const ctx = sharedCtx ?? createDevToolsContext(client, { styleNonce })
 
+  // Tear the context down with the component, but ONLY when this instance
+  // created it. The PiP window mounts a second DevToolsApp over the docked
+  // shell's context by design, so destroying a shared ctx on popup close would
+  // unsubscribe the panel that is still on screen.
+  // Its own effect with no reactive reads, so it runs once on unmount rather
+  // than re-running whenever the store ticks.
+  $effect(() => {
+    if (sharedCtx) return
+    return () => ctx.destroy()
+  })
+
   // $state so the effects that read it re-run if bind:this ever lands late;
   // the keyboard handler now depends on it to scope arrow keys to the panel.
   let rootEl = $state<HTMLDivElement | undefined>()

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { REDACTED, isSensitiveKey, redactHeaders, redactDeep, redactExport } from './redact'
+import { REDACTED, isSensitiveKey, redactHeaders, redactDeep, redactExport, redactUrl } from './redact'
 
 describe('isSensitiveKey', () => {
   it.each([
@@ -216,5 +216,46 @@ describe('redaction of non-plain objects', () => {
     expect(redactExport({ at: date }).at).toBe(date)
     const map = new Map([['token', 'x']])
     expect(redactExport({ m: map }).m).toBe(map)
+  })
+})
+
+describe('redactUrl', () => {
+  it('masks the value and keeps the parameter name', () => {
+    // Seeing that a `?reset_token=` was present is the debuggable part; its
+    // value is the part that must not reach a GitHub issue.
+    expect(redactUrl('/reset?reset_token=abc123&page=2')).toBe(
+      `/reset?reset_token=${encodeURIComponent(REDACTED)}&page=2`,
+    )
+  })
+
+  it('leaves harmless query strings byte-identical', () => {
+    // Returning early matters: round-tripping through URL re-encodes and
+    // reorders, so an untouched URL must never go through it.
+    const url = '/users?page=2&sort=name&q=a+b%20c'
+    expect(redactUrl(url)).toBe(url)
+  })
+
+  it('leaves a URL with no query string alone', () => {
+    expect(redactUrl('/users/1')).toBe('/users/1')
+  })
+
+  it('preserves relative vs absolute form', () => {
+    expect(redactUrl('/cb?access_key=k')).toMatch(/^\/cb\?/)
+    expect(redactUrl('https://api.example.com/cb?access_key=k')).toMatch(/^https:\/\/api\.example\.com\/cb\?/)
+  })
+
+  it('returns an unparseable URL untouched rather than mangling it', () => {
+    const junk = 'http://[not a url?token=x'
+    expect(redactUrl(junk)).toBe(junk)
+  })
+
+  it('reaches URLs nested anywhere in an exported record', () => {
+    const out = redactExport({
+      url: '/a?api_key=LEAK1',
+      wire: { request: { url: '/b?csrf_token=LEAK2' } },
+      redirectUrl: '/c?password=LEAK3',
+    })
+    const json = JSON.stringify(out)
+    for (const leak of ['LEAK1', 'LEAK2', 'LEAK3']) expect(json).not.toContain(leak)
   })
 })

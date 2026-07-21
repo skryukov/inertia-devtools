@@ -28,9 +28,14 @@ let defaultOptions: DevToolsOptions = {}
 const teardowns: StopFunction[] = []
 
 /**
- * Stop capture and release the init guards so a fresh `createInertiaDevtools()`
- * can take over. Used by the HMR hook below; exported because a host that
- * mounts devtools conditionally needs a way back out.
+ * Stop capture, unmount the UI, remove the shadow host, and release the init
+ * guards so a fresh `createInertiaDevtools()` can take over.
+ *
+ * The comment here used to say "used by the HMR hook below". There is no HMR
+ * hook — `import.meta.hot` appears nowhere in this package — and nothing called
+ * this function at all, which is how it went unnoticed that it only tore down
+ * half of what it claimed: capture stopped, but the host element, the Svelte
+ * app, its document keydown listener and the store subscription all survived.
  */
 export function destroyInertiaDevtools(): void {
   while (teardowns.length) {
@@ -133,13 +138,26 @@ async function mountUI(store: DevToolsStore, options: DevToolsOptions): Promise<
     host.style.cssText = 'position:fixed;z-index:2147483647;pointer-events:none;inset:0;'
     document.body.appendChild(host)
 
+    // Registered before the await so a destroy() racing the dynamic import
+    // still removes the host element — otherwise the node outlives the teardown
+    // and the next init stacks a second one on top of it.
+    teardowns.push(() => host.remove())
+
     const shadow = host.attachShadow({ mode: 'open' })
 
     // Mount the devtools app (lazy-loaded) — the UI talks to the store
     // only through StoreClient, the same interface future shells (PiP,
     // iframe, extension) implement over a real transport
     const { mountDevTools } = await import('./ui/mount')
-    mountDevTools(shadow, createInRealmClient(store), options)
+    const unmount = await mountDevTools(shadow, createInRealmClient(store), options)
+    // Lost the race: destroy() ran while the chunk was loading, so tear the
+    // freshly-mounted app straight back down instead of leaking it.
+    if (!initialized) {
+      unmount()
+      host.remove()
+      return
+    }
+    teardowns.push(unmount)
   } catch (err) {
     if (typeof console !== 'undefined') {
       console.groupCollapsed('[inertia-devtools] Failed to mount UI')

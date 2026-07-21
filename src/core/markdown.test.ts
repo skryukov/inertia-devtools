@@ -526,6 +526,13 @@ describe('requestToJSON', () => {
   })
 })
 
+/** A credential past `redactDeep`'s depth cap — the capture-time walk gives up here. */
+function deeplyBuriedBody() {
+  let node: Record<string, unknown> = { password: 'DEEP-BODY-ggg' }
+  for (let i = 0; i < 12; i++) node = { nest: node }
+  return node
+}
+
 describe('export redaction (page props reach the clipboard)', () => {
   // Rails and Laravel adapters share a live csrf_token in props on EVERY page.
   // "Copy for AI" exists to be pasted into issues and chats, so every exporter
@@ -556,8 +563,17 @@ describe('export redaction (page props reach the clipboard)', () => {
 
   const leaky = () =>
     makeRequest({
+      // Query-string credentials: password-reset links, magic-link callbacks,
+      // signed S3 URLs. Emitted by every exporter that prints a URL.
+      url: '/users?reset_token=URL-LIVE-hhh&page=2',
+      redirectUrl: '/callback?access_key=REDIRECT-LIVE-iii',
       page: pageWithSecrets('Pages/Users/Index'),
       previousPage: pageWithSecrets('Pages/Users/Edit', '-PREV'),
+      // A live reference into the raw page — exported masked as `page.flash`
+      // and plain as `features[].details` in the same JSON blob.
+      features: [{ type: 'flash', label: 'FLASH', details: { flash: { reset_token: 'FLASH-LIVE-jjj' } } }],
+      // The request BODY. Only ever saw the depth-capped, fail-open redactDeep.
+      visitOptions: { data: deeplyBuriedBody(), headers: { Authorization: 'Bearer OPTS-LIVE-kkk' } },
       events: [
         {
           id: 1,
@@ -568,9 +584,17 @@ describe('export redaction (page props reach the clipboard)', () => {
           detail: { page: pageWithSecrets('Pages/Users/Index') },
         } as CapturedEvent,
       ],
-    })
+    } as Partial<RequestRecord>)
 
-  const ALL_SECRETS = [...Object.values(SECRETS), 'NESTED-LIVE-fff']
+  const ALL_SECRETS = [
+    ...Object.values(SECRETS),
+    'NESTED-LIVE-fff',
+    'DEEP-BODY-ggg',
+    'URL-LIVE-hhh',
+    'REDIRECT-LIVE-iii',
+    'FLASH-LIVE-jjj',
+    'OPTS-LIVE-kkk',
+  ]
 
   const exporters: Array<[string, (r: RequestRecord) => string]> = [
     ['requestToMarkdown', requestToMarkdown],

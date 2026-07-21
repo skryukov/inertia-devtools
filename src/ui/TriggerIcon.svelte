@@ -8,6 +8,19 @@
   let pos = $state({ x: 16, y: 16 })
   let dragging = $state(false)
   let dragOffset = { x: 0, y: 0 }
+  /**
+   * Below this, a pointerup is a click and not a drag.
+   *
+   * There was no threshold at all, and the click guard (`if (dragging) return`)
+   * was dead code: `pointerup` fires BEFORE `click` and had already set
+   * `dragging = false`, so every reposition of the trigger also toggled the
+   * panel. Tracked separately from `dragging` for that reason — the flag the
+   * click handler reads must survive pointerup.
+   */
+  const DRAG_THRESHOLD_PX = 4
+  let pointerStart = { x: 0, y: 0 }
+  let moved = false
+  let suppressClick = false
 
   // Status effect
   type StatusEffect = 'idle' | 'active' | 'success' | 'redirect' | 'error' | 'prefetch'
@@ -84,6 +97,8 @@
 
   function onPointerDown(e: PointerEvent) {
     dragging = true
+    moved = false
+    pointerStart = { x: e.clientX, y: e.clientY }
     const el = e.currentTarget as HTMLElement
     const rect = el.getBoundingClientRect()
     dragOffset = {
@@ -95,6 +110,14 @@
 
   function onPointerMove(e: PointerEvent) {
     if (!dragging) return
+    // Repositioning starts only past the threshold, so the hand-tremor of an
+    // ordinary click does not nudge the icon a pixel and then swallow the click.
+    if (!moved) {
+      const dx = e.clientX - pointerStart.x
+      const dy = e.clientY - pointerStart.y
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
+      moved = true
+    }
     const vw = window.innerWidth
     const vh = window.innerHeight
     pos = {
@@ -103,19 +126,41 @@
     }
   }
 
-  function onPointerUp(e: PointerEvent) {
+  function endDrag(e: PointerEvent, wasCancelled: boolean) {
     if (!dragging) return
     dragging = false
 
-    saveSetting('trigger-pos', JSON.stringify(pos))
+    if (moved) {
+      if (!wasCancelled) saveSetting('trigger-pos', JSON.stringify(pos))
+      // pointerup runs first, so the click that follows must be told to stand
+      // down explicitly rather than re-reading `dragging`.
+      suppressClick = true
+    }
 
-    // Detect click (no significant drag)
     const el = e.currentTarget as HTMLElement
-    el.releasePointerCapture(e.pointerId)
+    // Throws InvalidStateError when capture was already released — a
+    // pointercancel (macOS back-swipe, touch gesture takeover) does exactly
+    // that, and the exception lands in the host app's error reporting.
+    try {
+      el?.releasePointerCapture(e.pointerId)
+    } catch {
+      /* capture already gone */
+    }
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    endDrag(e, false)
+  }
+
+  function onPointerCancel(e: PointerEvent) {
+    endDrag(e, true)
   }
 
   function onClick() {
-    if (dragging) return
+    if (suppressClick) {
+      suppressClick = false
+      return
+    }
     ctx.togglePanel()
   }
 
@@ -148,6 +193,7 @@
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
+  onpointercancel={onPointerCancel}
   onclick={onClick}
   aria-label="Toggle Inertia DevTools (Alt+Shift+D)"
   title="Inertia DevTools (Alt+Shift+D)"

@@ -83,11 +83,15 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
   const { stripInProduction = true, ...runtimeOptions } = options
   // Fail SAFE, not open. `configResolved` is a Vite-only hook, so a host that
   // consumes this through the plain Rollup interface never calls it and keeps
-  // whatever these defaults say. They used to say "development": no stripping,
+  // whatever this default says. It used to say "development": no stripping,
   // plus auto-injection — a production bundle that imports and boots the
   // devtools. An unknown host now gets the stripped behaviour and Vite flips
-  // these to the truth in configResolved below.
-  let isDev = false
+  // this to the truth in configResolved below.
+  //
+  // One flag, deliberately. There used to be a second (`isDev`) gating
+  // auto-injection, and the two disagreed: `stripInProduction: false` cleared
+  // `strip` but left `isDev` false, so nothing was stripped and nothing was
+  // injected either. "Do we strip?" and "do we inject?" are the same question.
   let strip = true
   /**
    * The adapter specifier the app imported `createInertiaApp` from, captured
@@ -122,7 +126,6 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       const isTestRunner = Boolean(
         (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.VITEST,
       )
-      isDev = config.command === 'serve' && !isTestRunner
       // Any build strips, whatever the mode. `--mode development` used to keep
       // devtools, which meant a QA/preview host built that way served a live,
       // mounting panel to every visitor — the plugin's own injected `_init()`
@@ -181,7 +184,16 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       return null
     },
     transform(code, id, transformOptions) {
-      if (!isDev) return
+      // Keyed off `strip`, not `isDev`. Gating on `isDev` meant auto-injection
+      // never ran in ANY build, so `stripInProduction: false` — whose entire
+      // purpose is to intentionally ship devtools — silently did nothing unless
+      // the app also had a manual `import 'inertia-devtools'`. The option
+      // worked on one path and no-oped on the other, and the one it failed on
+      // is the path the README's Quick Start recommends.
+      //
+      // This is still fail-safe: `strip` defaults to true, so a host that never
+      // calls `configResolved` (plain Rollup) gets no injection.
+      if (strip) return
       if (id.includes('node_modules') || id.startsWith('\0')) return
       // Devtools need a DOM. Injecting into the server graph drags the whole
       // UI in for nothing, and resolution can fail outright when the importer

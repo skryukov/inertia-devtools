@@ -70,6 +70,22 @@ export class Correlator {
    * Returns the affected RequestRecord, or null if correlation failed.
    */
   processEvent(event: CapturedEvent): RequestRecord | null {
+    const record = this.dispatchEvent(event)
+    // The single funnel. Diagnostics used to be recomputed at each handler's
+    // own discretion, and `handleClientVisit` was the one handler that never
+    // did on either of its paths — so a `router.replace()` visit was inserted
+    // with `diagnostics: []` and stayed that way, which made
+    // `detectHistoryReplace`'s first branch unreachable in production despite
+    // being covered by a unit test.
+    //
+    // Recomputing on every event rather than at chosen moments also means a
+    // rule can never be missed because a handler forgot; `computeDiagnostics`
+    // is pure, so a redundant run costs time and nothing else.
+    if (record) record.diagnostics = computeDiagnostics(record)
+    return record
+  }
+
+  private dispatchEvent(event: CapturedEvent): RequestRecord | null {
     const { name, detail, timestamp } = event
 
     switch (name) {
@@ -293,7 +309,6 @@ export class Correlator {
       record.prevented = true
       record.finishedAt = timestamp
       record.duration = 0
-      record.diagnostics = computeDiagnostics(record)
     }
 
     this.insertRecord(record)
@@ -396,8 +411,6 @@ export class Correlator {
       }
     }
 
-    record.diagnostics = computeDiagnostics(record)
-
     return record
   }
 
@@ -493,8 +506,6 @@ export class Correlator {
       record.duration = event.timestamp - record.startedAt
       record.completed = true
     }
-
-    record.diagnostics = computeDiagnostics(record)
 
     return record
   }
@@ -678,8 +689,6 @@ export class Correlator {
         }
       }
     }
-
-    record.diagnostics = computeDiagnostics(record)
 
     return record
   }

@@ -12,7 +12,18 @@ export interface DevToolsAppProps {
   styleNonce?: string
 }
 
-export function mountDevTools(shadow: ShadowRoot, client: StoreClient, options: DevToolsOptions): void {
+/**
+ * Returns a teardown for the mounted app. Used to return void and drop the
+ * unmount function `mountSvelteApp` hands back, which made
+ * `destroyInertiaDevtools()` a half-teardown: capture stopped, but the shadow
+ * host, the trigger icon, the document keydown listener and the store
+ * subscription all stayed. Re-initialising then produced a second set of each.
+ */
+export async function mountDevTools(
+  shadow: ShadowRoot,
+  client: StoreClient,
+  options: DevToolsOptions,
+): Promise<() => void> {
   // Inject base styles
   const style = document.createElement('style')
   if (options.styleNonce) {
@@ -27,7 +38,12 @@ export function mountDevTools(shadow: ShadowRoot, client: StoreClient, options: 
   shadow.appendChild(container)
 
   // Mount Svelte app
-  mountSvelteApp(container, client, { styleNonce: options.styleNonce })
+  const unmount = await mountSvelteApp(container, client, { styleNonce: options.styleNonce })
+  return () => {
+    unmount?.()
+    style.remove()
+    container.remove()
+  }
 }
 
 export async function mountSvelteApp(

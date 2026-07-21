@@ -18,19 +18,20 @@ import { redactExport } from './redact'
  * clipboard is a different audience, and the Rails and Laravel adapters put a
  * live `csrf_token` in props on every page.
  *
- * Applied to all five exporters, including the two that carry no prop values
- * today: the cost is nil for those, and it means adding a props dump to one of
- * them later cannot quietly reopen this. `events[].detail` matters as much as
- * `page` — `safeSerializeDetail` structuredClones the page verbatim, so the raw
- * events hold a second full copy.
+ * The WHOLE record goes through, not a list of fields. Naming `page`,
+ * `previousPage` and `events[].detail` covered every leak that existed the day
+ * it was written and none of the ones added afterwards: `features[].details`
+ * holds a live reference into the raw page (so `flash` credentials exported
+ * masked in one field and plain in the next), and `visitOptions` — which is the
+ * request BODY, the single most likely place for a password — had only ever
+ * seen the depth-capped, fail-open `redactDeep`.
+ *
+ * An allowlist has to be re-audited on every field added to RequestRecord. This
+ * has to be re-audited never. `redactExport` preserves structure and only
+ * replaces values, so nothing downstream sees a different shape.
  */
 function forExport(request: RequestRecord): RequestRecord {
-  return {
-    ...request,
-    page: request.page ? redactExport(request.page) : request.page,
-    previousPage: request.previousPage ? redactExport(request.previousPage) : request.previousPage,
-    events: request.events.map((event) => ({ ...event, detail: redactExport(event.detail) })),
-  }
+  return redactExport(request)
 }
 
 /** Full snapshot — context header + raw page JSON */

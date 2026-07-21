@@ -333,5 +333,22 @@ describe('inertiaDevtools vite plugin', () => {
       expect(code).toContain(`_init(Object.assign({"docsProvider":"inertiajs"}, { router: __router }))`)
       expect(code).not.toContain('stripInProduction')
     })
+
+    it('also AUTO-INJECTS in a production build, not just on the manual-import path', () => {
+      // The option worked when app code had `import 'inertia-devtools'` and
+      // silently did nothing without it, because transform() was gated on a
+      // separate isDev flag that no build ever sets. That is the path the
+      // README's Quick Start recommends, so the documented setup shipped an
+      // empty bundle while the config said devtools were kept.
+      const plugin = makePlugin(prodBuild, { stripInProduction: false })
+      const result = plugin.transform(`import { createInertiaApp } from '@inertiajs/vue3'`, '/src/app.ts')
+      expect(result).not.toBe(undefined)
+      expect((result as { code: string }).code).toContain(`import 'inertia-devtools'`)
+    })
+
+    it('still injects nothing in a stripping build', () => {
+      const plugin = makePlugin(prodBuild, { stripInProduction: true })
+      expect(plugin.transform(`import { createInertiaApp } from '@inertiajs/vue3'`, '/src/app.ts')).toBe(undefined)
+    })
   })
 })
