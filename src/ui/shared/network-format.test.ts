@@ -4,8 +4,12 @@ import {
   statusKind,
   formatTransferSize,
   networkDuration,
+  timingTitle,
   timingLine,
   captureModeNotice,
+  wireCaveat,
+  emptyStateMessage,
+  serverTimingRows,
 } from './network-format'
 import type { RequestRecord } from '../../core/types'
 
@@ -106,8 +110,11 @@ describe('networkDuration / timingLine', () => {
 })
 
 describe('captureModeNotice', () => {
-  it('returns a notice in fallback mode without wire data', () => {
-    expect(captureModeNotice('fallback', makeRecord())).toMatch(/interceptors unavailable/i)
+  it('returns a notice naming both plausible causes in fallback mode without wire data', () => {
+    const notice = captureModeNotice('fallback', makeRecord())
+    expect(notice).toMatch(/interceptors are not available/i)
+    expect(notice).toMatch(/dev option disabled/i)
+    expect(notice).toMatch(/incompatible Inertia version/i)
   })
 
   it('returns null when wire data is present', () => {
@@ -124,5 +131,122 @@ describe('captureModeNotice', () => {
 
   it('returns null for client visits (no network activity)', () => {
     expect(captureModeNotice('fallback', makeRecord({ type: 'client' }))).toBeNull()
+  })
+})
+
+describe('wireCaveat', () => {
+  it('returns null without wire data', () => {
+    expect(wireCaveat(makeRecord())).toBeNull()
+    expect(wireCaveat(makeRecord({ network: { url: '/u', duration: 12, startedAt: 1, finishedAt: 13 } }))).toBeNull()
+  })
+
+  it('caveats the pre-client header snapshot and transparent redirects when wire data is present', () => {
+    const caveat = wireCaveat(
+      makeRecord({
+        wire: { request: { method: 'GET', url: '/u', headers: {}, startedAt: 1 } },
+      }),
+    )
+    expect(caveat).toMatch(/before Inertia's HTTP client adds X-XSRF-TOKEN and Content-Type/)
+    expect(caveat).toMatch(/redirects are followed transparently/)
+    expect(caveat).toMatch(/browser's Network panel is the HTTP source of truth/)
+  })
+
+  it('returns the caveat for response-only wire data', () => {
+    const caveat = wireCaveat(
+      makeRecord({
+        wire: { response: { status: 200, headers: {}, finishedAt: 5 } },
+      }),
+    )
+    expect(caveat).not.toBeNull()
+  })
+})
+
+describe('serverTimingRows', () => {
+  it('returns empty array without Server-Timing data', () => {
+    expect(serverTimingRows(makeRecord())).toEqual([])
+    expect(
+      serverTimingRows(makeRecord({ network: { url: '/users', duration: 100, startedAt: 0, finishedAt: 100 } })),
+    ).toEqual([])
+  })
+
+  it('maps metrics to rows with bar widths relative to the largest metric', () => {
+    const record = makeRecord({
+      network: {
+        url: '/users',
+        duration: 100,
+        startedAt: 0,
+        finishedAt: 100,
+        serverTiming: [
+          { name: 'db', duration: 25, description: 'SELECT queries' },
+          { name: 'app', duration: 50, description: '' },
+        ],
+      },
+    })
+    expect(serverTimingRows(record)).toEqual([
+      { name: 'db', description: 'SELECT queries', durationLabel: '25ms', barPct: 50 },
+      { name: 'app', description: '', durationLabel: '50ms', barPct: 100 },
+    ])
+  })
+
+  it('keeps one decimal for fractional durations', () => {
+    const record = makeRecord({
+      network: {
+        url: '/users',
+        duration: 100,
+        startedAt: 0,
+        finishedAt: 100,
+        serverTiming: [{ name: 'cache', duration: 0.42, description: '' }],
+      },
+    })
+    expect(serverTimingRows(record)[0].durationLabel).toBe('0.4ms')
+  })
+
+  it('uses zero-width bars when all durations are zero', () => {
+    const record = makeRecord({
+      network: {
+        url: '/users',
+        duration: 100,
+        startedAt: 0,
+        finishedAt: 100,
+        serverTiming: [{ name: 'cache', duration: 0, description: 'hit' }],
+      },
+    })
+    expect(serverTimingRows(record)[0].barPct).toBe(0)
+  })
+})
+
+describe('emptyStateMessage', () => {
+  it('explains cache-served visits instead of claiming missing data', () => {
+    expect(emptyStateMessage(makeRecord({ cached: true }))).toBe('Served from the prefetch cache — no request was made')
+  })
+
+  it('reports missing network data otherwise', () => {
+    expect(emptyStateMessage(makeRecord())).toBe('No network data captured for this visit')
+  })
+})
+
+describe('networkDuration zero handling', () => {
+  it('shows a legitimate 0ms Resource Timing duration', () => {
+    const record = makeRecord({ network: { url: '/u', duration: 0, startedAt: 1, finishedAt: 1 } })
+    expect(networkDuration(record)).toBe(0)
+  })
+})
+
+describe('timingTitle', () => {
+  it('labels interceptor duration as including client-side processing', () => {
+    const record = makeRecord({
+      wire: {
+        request: { method: 'GET', url: '/u', headers: {}, startedAt: 0 },
+        response: { headers: {}, bodySize: 10, finishedAt: 5 },
+      },
+    })
+    expect(timingTitle(record)).toContain('not pure network time')
+    expect(timingTitle(record)).toContain('decoded body bytes')
+  })
+
+  it('labels Resource Timing fallback as network time', () => {
+    const record = makeRecord({ network: { url: '/u', duration: 12, startedAt: 1, finishedAt: 13, transferSize: 100 } })
+    expect(timingTitle(record)).toContain('Resource Timing')
+    expect(timingTitle(record)).toContain('compressed')
   })
 })

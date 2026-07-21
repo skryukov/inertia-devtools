@@ -1,28 +1,40 @@
-import type { DevToolsStore } from '../core/store'
+import type { StoreClient } from '../core/client'
 import type { InertiaPage } from '../core/protocol'
-import type { DevToolsState, RequestRecord } from '../core/types'
+import type { DevToolsState, RequestRecord, SessionRequestSummary } from '../core/types'
+import { extractPageFeatures } from '../core/features'
 import { loadSetting, saveSetting } from './shared/storage'
+import { openPipWindow, type PipHandle } from './pip'
 
 /**
- * Reactive Svelte 5 wrapper around the vanilla JS DevToolsStore.
+ * Reactive Svelte 5 wrapper around a StoreClient.
  * Uses $state for reactive state that Svelte components can bind to.
  */
 export type Theme = 'system' | 'dark' | 'light'
 
-export function createDevToolsContext(store: DevToolsStore) {
+export interface DevToolsContextOptions {
+  /** Nonce for styles injected outside the shadow root (PiP window). */
+  styleNonce?: string
+}
+
+export function createDevToolsContext(client: StoreClient, options: DevToolsContextOptions = {}) {
   let tick = $state(0)
   // Shallow-clone each record so Svelte's keyed {#each} sees new object
   // references when records are mutated (e.g. finishedAt set on finish).
   let state: DevToolsState = $derived.by(() => {
     void tick
-    const raw = store.getState()
+    const raw = client.getState()
     return {
       ...raw,
       requests: raw.requests.map((r) => ({ ...r })),
     }
   })
   let selectedVisitId = $state<number | null>(null)
+  // Delivered once in the client's hello config; kept as local state so
+  // clearAll() can wipe it (the store clears the persisted session too).
+  let previousSessionRequests = $state<SessionRequestSummary[]>(client.hello.previousSessionRequests)
   let panelOpen = $state(false)
+  let pipOpen = $state(false)
+  let pipHandle: PipHandle | null = null
   let activeTab = $state<string>(loadSetting('tab', 'props'))
   let theme = $state<Theme>(loadSetting('theme', 'system') as Theme)
   let requestFilter = $state('')
@@ -44,15 +56,50 @@ export function createDevToolsContext(store: DevToolsStore) {
   }
 
   // Subscribe to store changes — bump tick to trigger derived recomputation
-  const unsubscribe = store.subscribe(() => {
+  const unsubscribe = client.subscribe(() => {
     tick++
   })
 
   function togglePanel() {
+    // While popped out the trigger focuses the popup instead of toggling
+    if (pipOpen) {
+      pipHandle?.focus()
+      return
+    }
     panelOpen = !panelOpen
-    store.setPanelOpen(panelOpen)
+    client.setPanelOpen(panelOpen)
 
     saveSetting('panel', panelOpen ? 'open' : 'closed')
+  }
+
+  function openPip(): void {
+    // Already popped out — just focus the existing window
+    if (pipHandle) {
+      pipHandle.focus()
+      return
+    }
+    const handle = openPipWindow(client, {
+      context: ctx,
+      styleNonce: options.styleNonce,
+      onClose: () => {
+        // Popup gone (its close button, opener unload, or closePip) —
+        // pipOpen flips back so the docked panel re-appears.
+        pipOpen = false
+        pipHandle = null
+        saveSetting('pip', 'closed')
+      },
+    })
+    // Popup blocked — fall back silently to the docked panel
+    if (!handle) return
+    pipHandle = handle
+    pipOpen = true
+    // Remember the preference only — never auto-reopened on load, since
+    // programmatic window.open outside a user gesture is popup-blocked.
+    saveSetting('pip', 'open')
+  }
+
+  function closePip(): void {
+    pipHandle?.close()
   }
 
   function selectRequest(visitId: number) {
@@ -106,8 +153,17 @@ export function createDevToolsContext(store: DevToolsStore) {
   }
 
   function clearAll() {
-    store.clear()
+    client.clear()
+    previousSessionRequests = []
     selectedVisitId = null
+  }
+
+  function replayVisit(visitId: number) {
+    client.replayVisit(visitId)
+  }
+
+  function reload() {
+    client.reload()
   }
 
   function cycleTheme() {
@@ -131,7 +187,7 @@ export function createDevToolsContext(store: DevToolsStore) {
   })
 
   /** Page-level features derived from the current page (excludes request-specific features). */
-  const currentPageFeatures = $derived(currentPage ? store.getPageFeatures(currentPage) : [])
+  const currentPageFeatures = $derived(currentPage ? extractPageFeatures(currentPage) : [])
 
   /** previousPage for live view diff — always the most recent request's previousPage.
    *  Shows what the LAST change was, regardless of type (full, deferred, partial, client). */
@@ -157,18 +213,19 @@ export function createDevToolsContext(store: DevToolsStore) {
   // Restore panel state from localStorage
   if (loadSetting('panel', '') === 'open') {
     panelOpen = true
-    store.setPanelOpen(true)
+    client.setPanelOpen(true)
   }
 
   function destroy() {
     unsubscribe()
     clearTimeout(notDetectedTimer)
+    pipHandle?.close()
     if (mql && mqlHandler) {
       mql.removeEventListener('change', mqlHandler)
     }
   }
 
-  return {
+  const ctx = {
     get state() {
       return state
     },
@@ -177,6 +234,9 @@ export function createDevToolsContext(store: DevToolsStore) {
     },
     get panelOpen() {
       return panelOpen
+    },
+    get pipOpen() {
+      return pipOpen
     },
     get activeTab() {
       return activeTab
@@ -203,29 +263,37 @@ export function createDevToolsContext(store: DevToolsStore) {
       return theme
     },
     get previousSessionRequests() {
-      return store.previousSessionRequests
+      return previousSessionRequests
     },
     get showInertiaNotDetected() {
       return showInertiaNotDetected
     },
     get docsProvider() {
-      return store.docsProvider
+      return client.hello.docsProvider
+    },
+    get canAct() {
+      return client.hello.canAct
     },
     get resolvedTheme() {
       return resolvedTheme
     },
     togglePanel,
+    openPip,
+    closePip,
     selectRequest,
     selectNextRequest,
     selectPrevRequest,
     deselectRequest,
     setActiveTab,
     clearAll,
+    replayVisit,
+    reload,
     setRequestFilter,
     cycleTheme,
     destroy,
-    store,
   }
+
+  return ctx
 }
 
 export type DevToolsContext = ReturnType<typeof createDevToolsContext>

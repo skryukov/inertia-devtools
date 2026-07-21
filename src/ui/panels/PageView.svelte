@@ -1,12 +1,14 @@
 <script lang="ts">
   import type { InertiaPage } from '../../core/protocol'
-  import type { ActiveFeature, VisitType, DocsProvider } from '../../core/types'
+  import type { ActiveFeature, VisitType, DocsProvider, RequestRecord } from '../../core/types'
   import { diffProps, countTopLevelChanges } from '../../core/diff'
+  import { diffToMarkdown } from '../../core/markdown'
   import { featureColor } from '../shared/feature-colors'
   import { getFeatureInfo } from '../shared/feature-info'
   import { copyToClipboard } from '../shared/clipboard'
   import { isNonEmptyRecord } from '../shared/storage'
   import { jsonByteSize, formatBytes } from '../shared/format'
+  import { searchPaths } from '../shared/tree-search'
   import { ICON_COPY } from '../shared/icons'
   import TreeView from '../shared/TreeView.svelte'
   import DiffTreeView from '../shared/DiffTreeView.svelte'
@@ -23,6 +25,10 @@
     showRaw?: boolean
     visitId?: number
     docsProvider?: DocsProvider
+    /** Selected request record — enables the "Copy diff" affordance. */
+    request?: RequestRecord
+    /** Called after a copy action so the parent can show its toast. */
+    onCopied?: () => void
   }
 
   let {
@@ -37,6 +43,8 @@
     showRaw: externalShowRaw,
     visitId,
     docsProvider,
+    request,
+    onCopied,
   }: Props = $props()
 
   // Live view controls its own toggle; selected request gets it from parent
@@ -100,6 +108,26 @@
     return result
   })
 
+  // --- Props search ---
+  let searchInput = $state('')
+  let propsQuery = $state('')
+  let searchTimer: ReturnType<typeof setTimeout> | undefined
+
+  function handleSearchInput(value: string) {
+    searchInput = value
+    clearTimeout(searchTimer)
+    searchTimer = setTimeout(() => (propsQuery = value), 150)
+  }
+
+  $effect(() => {
+    return () => clearTimeout(searchTimer)
+  })
+
+  const searchActive = $derived(propsQuery.trim().length > 0)
+  // Lazy — only evaluated where the props tree renders (Preview mode, non-diff)
+  const searchResult = $derived.by(() => (searchActive ? searchPaths(filteredProps, propsQuery) : null))
+  const matchCount = $derived(searchResult?.matches.size ?? 0)
+
   // --- Diff ---
   const prevProps = $derived(previousPage?.props)
   const hasPrevious = $derived(prevProps !== undefined)
@@ -122,9 +150,16 @@
     expandedFeature = null
   })
 
-  // --- Raw mode copy ---
+  // --- Copy actions ---
   function handleCopyRaw() {
     copyToClipboard(JSON.stringify(page, null, 2))
+    onCopied?.()
+  }
+
+  function handleCopyDiff() {
+    if (!request) return
+    copyToClipboard(diffToMarkdown(request))
+    onCopied?.()
   }
 </script>
 
@@ -341,6 +376,20 @@
                 Show internal
               </label>
             {/if}
+            {#if showDiff && hasPrevious && request}
+              <button class="copy-btn" onclick={handleCopyDiff} title="Copy diff as Markdown">
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round">{@html ICON_COPY}</svg
+                >
+                Copy
+              </button>
+            {/if}
           </div>
         </div>
 
@@ -369,7 +418,27 @@
             <DiffTreeView nodes={diffNodes} {showUnchanged} />
           {/if}
         {:else if hasProps}
-          <TreeView data={filteredProps} defaultOpen={true} />
+          <div class="props-search">
+            <input
+              type="text"
+              class="search-input"
+              placeholder="Search props..."
+              aria-label="Search props"
+              value={searchInput}
+              oninput={(e) => handleSearchInput(e.currentTarget.value)}
+            />
+            {#if searchActive}
+              <span class="search-count" class:zero={matchCount === 0}>
+                {matchCount === 0 ? 'no matches' : `${matchCount} ${matchCount === 1 ? 'match' : 'matches'}`}
+              </span>
+            {/if}
+          </div>
+          <TreeView
+            data={filteredProps}
+            defaultOpen={true}
+            searchMatches={searchResult?.matches}
+            forceExpand={searchResult?.expand}
+          />
         {:else}
           <div class="empty">No props</div>
         {/if}
@@ -719,6 +788,48 @@
   }
 
   .no-previous {
+    font-style: italic;
+  }
+
+  /* --- Props search --- */
+  .props-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .search-input {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-family: inherit;
+    border: 1px solid var(--dt-border);
+    border-radius: 4px;
+    background: var(--dt-bg);
+    color: var(--dt-text);
+    outline: none;
+  }
+
+  .search-input::placeholder {
+    color: var(--dt-text-muted);
+  }
+
+  .search-input:focus {
+    border-color: var(--dt-accent);
+  }
+
+  .search-count {
+    font-size: 11px;
+    color: var(--dt-text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .search-count.zero {
     font-style: italic;
   }
 

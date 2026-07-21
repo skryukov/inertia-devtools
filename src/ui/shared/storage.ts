@@ -1,7 +1,7 @@
 const KEY_PREFIX = 'inertia-devtools-'
 
 /** Keys stored in sessionStorage (per-tab, survives HMR but not new tabs) */
-const SESSION_KEYS = new Set(['panel'])
+const SESSION_KEYS = new Set(['panel', 'pip'])
 
 function storageFor(key: string): Storage | undefined {
   if (typeof window === 'undefined') return undefined
@@ -20,9 +20,5 @@ export function saveSetting(key: string, value: string): void {
   storage.setItem(KEY_PREFIX + key, value)
 }
 
-/**
- * Type guard: value is a non-null, non-array object with at least one key.
- */
-export function isNonEmptyRecord(value: unknown): value is Record<string, unknown> {
-  return value != null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0
-}
+// Re-export from core so existing Svelte imports keep working.
+export { isNonEmptyRecord } from '../../core/utils'

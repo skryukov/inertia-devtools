@@ -141,8 +141,8 @@
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
   onclick={onClick}
-  aria-label="Toggle Inertia DevTools"
-  title="Inertia DevTools"
+  aria-label="Toggle Inertia DevTools (Alt+Shift+D)"
+  title="Inertia DevTools (Alt+Shift+D)"
 >
   <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
     <path d="M4 4L9 9L4 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />

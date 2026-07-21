@@ -1,7 +1,18 @@
-import type { DevToolsStore } from '../core/store'
+import type { StoreClient } from '../core/client'
 import type { DevToolsOptions } from '../core/types'
+import type { DevToolsContext } from './stores.svelte'
 
-export function mountDevTools(shadow: ShadowRoot, store: DevToolsStore, options: DevToolsOptions): void {
+/** Optional props forwarded to the Svelte app (see DevToolsApp.svelte). */
+export interface DevToolsAppProps {
+  /** Reuse an existing reactive context instead of creating one (PiP window). */
+  sharedCtx?: DevToolsContext
+  /** Render as a Picture-in-Picture window: panel only, filling the document. */
+  pip?: boolean
+  /** Nonce forwarded to styles injected later (e.g. into the PiP window). */
+  styleNonce?: string
+}
+
+export function mountDevTools(shadow: ShadowRoot, client: StoreClient, options: DevToolsOptions): void {
   // Inject base styles
   const style = document.createElement('style')
   if (options.styleNonce) {
@@ -16,18 +27,23 @@ export function mountDevTools(shadow: ShadowRoot, store: DevToolsStore, options:
   shadow.appendChild(container)
 
   // Mount Svelte app
-  mountSvelteApp(container, store, options)
+  mountSvelteApp(container, client, { styleNonce: options.styleNonce })
 }
 
-async function mountSvelteApp(target: HTMLElement, store: DevToolsStore, _options: DevToolsOptions): Promise<void> {
+export async function mountSvelteApp(
+  target: HTMLElement,
+  client: StoreClient,
+  appProps: DevToolsAppProps = {},
+): Promise<(() => void) | undefined> {
   try {
-    const { mount } = await import('svelte')
+    const { mount, unmount } = await import('svelte')
     const { default: DevToolsApp } = await import('./DevToolsApp.svelte')
 
-    mount(DevToolsApp, {
+    const app = mount(DevToolsApp, {
       target,
-      props: { store },
+      props: { client, ...appProps },
     })
+    return () => unmount(app)
   } catch (err) {
     // Fallback: show error message in shadow DOM
     target.innerHTML = `
@@ -44,12 +60,19 @@ async function mountSvelteApp(target: HTMLElement, store: DevToolsStore, _option
       console.error(err)
       console.groupEnd()
     }
+    return undefined
   }
 }
 
-function getBaseStyles(): string {
+/**
+ * Base styles for the devtools UI. Scoped to `:host` for the docked
+ * Shadow DOM shell, or `:root` when injected into a document the
+ * devtools own outright (the PiP window).
+ */
+export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
+  const lightScope = scope === ':host' ? ':host([data-theme="light"])' : ':root[data-theme="light"]'
   return `
-    :host {
+    ${scope} {
       /* Base surface colors */
       --dt-bg: oklch(0.21 0.006 286);
       --dt-bg-card: oklch(0.274 0.006 286);
@@ -84,7 +107,7 @@ function getBaseStyles(): string {
       color: var(--dt-text);
     }
 
-    :host([data-theme="light"]) {
+    ${lightScope} {
       --dt-bg: oklch(1 0 0);
       --dt-bg-card: oklch(0.967 0.003 286);
       --dt-border: oklch(0.92 0.004 286);

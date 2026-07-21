@@ -1,7 +1,17 @@
 <script lang="ts">
   import type { RequestRecord, DocsProvider, NetworkCaptureMode } from '../../core/types'
   import type { HeaderEntry } from '../shared/network-format'
-  import { sortedHeaders, statusKind, timingLine, captureModeNotice, isInertiaHeader } from '../shared/network-format'
+  import {
+    sortedHeaders,
+    statusKind,
+    timingLine,
+    timingTitle,
+    captureModeNotice,
+    wireCaveat,
+    emptyStateMessage,
+    isInertiaHeader,
+    serverTimingRows,
+  } from '../shared/network-format'
 
   let {
     request,
@@ -15,7 +25,9 @@
   const requestHeaders = $derived(sortedHeaders(wire?.request?.headers))
   const responseHeaders = $derived(sortedHeaders(wire?.response?.headers))
   const timing = $derived(timingLine(request))
+  const serverTiming = $derived(serverTimingRows(request))
   const notice = $derived(captureModeNotice(captureMode, request))
+  const caveat = $derived(wireCaveat(request))
   const status = $derived(request.status ?? wire?.response?.status)
 
   /** Inferred protocol details (fallback when no wire data is available). */
@@ -51,7 +63,7 @@
       <span class="timing-label">{request.method}</span>
       <span class="timing-url">{request.url}</span>
       {#if timing}
-        <span class="timing-value">{timing}</span>
+        <span class="timing-value" title={timingTitle(request)}>{timing}</span>
       {/if}
     </div>
   {/if}
@@ -79,6 +91,31 @@
 
   {@render headersBox('Request Headers', requestHeaders)}
   {@render headersBox('Response Headers', responseHeaders)}
+
+  {#if caveat}
+    <div class="wire-footnote">{caveat}</div>
+  {/if}
+
+  <!-- Server-Timing metrics from the Resource Timing entry -->
+  {#if serverTiming.length > 0}
+    <div class="headers-box">
+      <div class="headers-title">Server Timing</div>
+      <div class="server-timing-rows">
+        {#each serverTiming as row, i (i)}
+          <div class="server-timing-row">
+            <span class="server-timing-name">{row.name}</span>
+            {#if row.description}
+              <span class="server-timing-desc">{row.description}</span>
+            {/if}
+            <div class="server-timing-bar">
+              <div class="server-timing-bar-fill" style:width="{row.barPct}%"></div>
+            </div>
+            <span class="server-timing-duration">{row.durationLabel}</span>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   <!-- Inferred protocol details (fallback when interceptors are unavailable) -->
   {#if showInferredProtocol}
@@ -120,7 +157,7 @@
           <div class="protocol-row" title="X-Inertia-Partial-Data header">
             <span class="protocol-label">Partial (only):</span>
             <span class="protocol-tags">
-              {#each protocol.partialData as prop}
+              {#each protocol.partialData as prop (prop)}
                 <span class="protocol-tag">{prop}</span>
               {/each}
             </span>
@@ -132,7 +169,7 @@
           <div class="protocol-row" title="X-Inertia-Partial-Except header">
             <span class="protocol-label">Partial (except):</span>
             <span class="protocol-tags">
-              {#each protocol.partialExcept as prop}
+              {#each protocol.partialExcept as prop (prop)}
                 <span class="protocol-tag">{prop}</span>
               {/each}
             </span>
@@ -144,7 +181,7 @@
           <div class="protocol-row" title="X-Inertia-Reset header">
             <span class="protocol-label">Reset:</span>
             <span class="protocol-tags">
-              {#each protocol.resetData as prop}
+              {#each protocol.resetData as prop (prop)}
                 <span class="protocol-tag">{prop}</span>
               {/each}
             </span>
@@ -164,7 +201,7 @@
   {/if}
 
   {#if !wire && !request.network && !timing && request.type !== 'client'}
-    <div class="empty">No network data captured for this visit</div>
+    <div class="empty">{emptyStateMessage(request)}</div>
   {/if}
 </div>
 
@@ -237,6 +274,14 @@
     font-size: 11px;
   }
 
+  /* Footnote variant of .notice: same muted tone, smaller and borderless. */
+  .wire-footnote {
+    margin: -6px 2px 12px;
+    color: var(--dt-text-muted);
+    font-size: 10px;
+    opacity: 0.75;
+  }
+
   .headers-box {
     border: 1px solid var(--dt-border);
     border-radius: 6px;
@@ -279,6 +324,53 @@
   .header-value {
     color: var(--dt-text);
     word-break: break-all;
+  }
+
+  .server-timing-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .server-timing-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.5;
+    font-family: monospace;
+    font-size: 11px;
+  }
+
+  .server-timing-name {
+    color: var(--dt-accent);
+    flex-shrink: 0;
+  }
+
+  .server-timing-desc {
+    color: var(--dt-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .server-timing-bar {
+    flex: 1;
+    min-width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--dt-border) 60%, transparent);
+    overflow: hidden;
+  }
+
+  .server-timing-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--dt-accent);
+  }
+
+  .server-timing-duration {
+    color: var(--dt-text);
+    flex-shrink: 0;
   }
 
   .protocol-box {

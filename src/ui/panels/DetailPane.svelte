@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { DevToolsContext } from '../stores.svelte'
-  import { requestToMarkdown } from '../../core/markdown'
+  import { requestToMarkdown, eventsToMarkdown, networkToMarkdown, requestToJSON } from '../../core/markdown'
   import { copyToClipboard } from '../shared/clipboard'
   import { ICON_COPY, ICON_CLOSE } from '../shared/icons'
   import PageView from './PageView.svelte'
@@ -15,10 +15,42 @@
   let toast = $state<string | null>(null)
   let toastTimeout: ReturnType<typeof setTimeout> | undefined
 
+  // Each tab copies its own view of the request as markdown
+  const copySource = $derived.by(() => {
+    if (ctx.activeTab === 'events') return { title: 'Copy events as Markdown', format: eventsToMarkdown }
+    if (ctx.activeTab === 'network') return { title: 'Copy network as Markdown', format: networkToMarkdown }
+    return { title: 'Copy request as Markdown', format: requestToMarkdown }
+  })
+
+  // Replay is GET-only: re-issuing a mutation would re-submit it. Client-side
+  // visits (router.push/replace) have no request to replay. The store guards
+  // non-GET again — this gate is for the affordance.
+  const canReplay = $derived(
+    ctx.canAct && ctx.selectedRequest?.method === 'GET' && ctx.selectedRequest?.type !== 'client',
+  )
+  const replayTitle = $derived.by(() => {
+    if (ctx.selectedRequest?.type === 'client') return 'Client-side visits have no request to replay'
+    if (ctx.selectedRequest && ctx.selectedRequest.method !== 'GET')
+      return 'Replaying non-GET requests is not supported (would re-submit the mutation)'
+    return 'Replay this visit'
+  })
+
+  function handleReplay() {
+    if (!ctx.selectedRequest || !canReplay) return
+    ctx.replayVisit(ctx.selectedRequest.visitId)
+    showToast('Replaying...')
+  }
+
   function handleCopy() {
     if (!ctx.selectedRequest) return
-    copyToClipboard(requestToMarkdown(ctx.selectedRequest))
+    copyToClipboard(copySource.format(ctx.selectedRequest))
     showToast('Copied!')
+  }
+
+  function handleCopyJSON() {
+    if (!ctx.selectedRequest) return
+    copyToClipboard(requestToJSON(ctx.selectedRequest))
+    showToast('Copied JSON!')
   }
 
   function showToast(message: string) {
@@ -53,7 +85,22 @@
             <button class="mode-btn" class:active={showRaw} onclick={() => (showRaw = true)}>Raw</button>
           </div>
         {/if}
-        <button class="copy-btn" onclick={handleCopy} title="Copy as markdown">
+        {#if ctx.canAct}
+          <button class="copy-btn" onclick={handleReplay} disabled={!canReplay} title={replayTitle}>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3" /></svg
+            >
+            Replay
+          </button>
+        {/if}
+        <button class="copy-btn" onclick={handleCopy} title={copySource.title}>
           <svg
             width="12"
             height="12"
@@ -65,6 +112,9 @@
           >
           Copy
         </button>
+        {#if ctx.activeTab === 'props'}
+          <button class="copy-btn" onclick={handleCopyJSON} title="Copy request as JSON">JSON</button>
+        {/if}
         <button class="close-btn" onclick={() => ctx.deselectRequest()} title="Back to live view">
           <svg
             width="12"
@@ -90,6 +140,8 @@
           type={ctx.selectedRequest.type}
           visitId={ctx.selectedRequest.visitId}
           docsProvider={ctx.docsProvider}
+          request={ctx.selectedRequest}
+          onCopied={() => showToast('Copied!')}
           {showRaw}
         />
       {:else if ctx.activeTab === 'events'}
@@ -111,6 +163,7 @@
         isLive={true}
         componentName={ctx.currentPage?.component}
         docsProvider={ctx.docsProvider}
+        onCopied={() => showToast('Copied!')}
       />
     </div>
   {/if}
@@ -185,9 +238,14 @@
     white-space: nowrap;
   }
 
-  .copy-btn:hover {
+  .copy-btn:hover:not(:disabled) {
     color: var(--dt-text);
     border-color: var(--dt-text-muted);
+  }
+
+  .copy-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .mode-toggle {

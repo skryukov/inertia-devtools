@@ -1,5 +1,6 @@
 <script lang="ts">
   import { inlineValue } from './format'
+  import { childPath } from './tree-search'
   import TreeView from './TreeView.svelte'
 
   let {
@@ -7,16 +8,28 @@
     label = '',
     depth = 0,
     defaultOpen = false,
+    path = '',
+    searchMatches,
+    forceExpand,
   }: {
     data: unknown
     label?: string
     depth?: number
     defaultOpen?: boolean
+    /** This node's dot/bracket path within the searched tree (see tree-search.ts). */
+    path?: string
+    /** Paths of nodes matching the active search query — highlighted. */
+    searchMatches?: Set<string>
+    /** Paths to auto-expand while a search query is active. */
+    forceExpand?: Set<string>
   } = $props()
 
   const initialOpen = $derived(defaultOpen || depth < 1)
   let open = $state<boolean | null>(null)
-  const isOpen = $derived(open ?? initialOpen)
+  // Search expansion is a separate layer merged at render time so the user's
+  // manual expand/collapse state survives the query being cleared.
+  const isOpen = $derived((forceExpand?.has(path) ?? false) || (open ?? initialOpen))
+  const isMatch = $derived(searchMatches?.has(path) ?? false)
 
   const isObject = $derived(data !== null && typeof data === 'object' && !Array.isArray(data))
   const isArray = $derived(Array.isArray(data))
@@ -60,21 +73,28 @@
 
 <div class="tree-node" style:padding-left="{depth * 14}px">
   {#if isExpandable}
-    <button class="toggle" onclick={() => (open = !isOpen)}>
+    <button class="toggle" class:match={isMatch} onclick={() => (open = !isOpen)}>
       <span class="arrow" class:open={isOpen}>{isOpen ? '\u25BE' : '\u25B8'}</span>
       {#if label}<span class="key">{label}:</span>{/if}
       <span class="preview {typeClass(data)}">{preview}</span>
     </button>
     {#if isOpen}
       {#each entries as [key, value] (key)}
-        <TreeView data={value} label={key} depth={depth + 1} />
+        <TreeView
+          data={value}
+          label={key}
+          depth={depth + 1}
+          path={childPath(path, key, isArray)}
+          {searchMatches}
+          {forceExpand}
+        />
       {/each}
       {#if entries.length === 0}
         <span class="empty" style:padding-left="{(depth + 1) * 14}px">empty</span>
       {/if}
     {/if}
   {:else}
-    <span class="leaf">
+    <span class="leaf" class:match={isMatch}>
       {#if label}<span class="key">{label}:</span>{/if}
       <span class={typeClass(data)}>{preview}</span>
     </span>
@@ -105,6 +125,12 @@
 
   .toggle:hover {
     background: var(--dt-hover);
+  }
+
+  .toggle.match,
+  .leaf.match {
+    background: var(--dt-row-changed);
+    border-radius: 3px;
   }
 
   .arrow {

@@ -3,6 +3,7 @@
   import type { RequestRecord, SessionRequestSummary, Diagnostic } from '../core/types'
   import { isNonEmptyRecord } from './shared/storage'
   import { useResizable } from './shared/resizable.svelte'
+  import { groupPollEntries, pollGroupExpanded, type PollGroup } from './shared/poll-groups'
 
   let { ctx }: { ctx: DevToolsContext } = $props()
 
@@ -12,7 +13,7 @@
   function statusColor(req: RequestLike): string {
     if (!req.finishedAt) return 'var(--dt-accent)'
     if ((req.status ?? 0) >= 400) return 'var(--dt-red)'
-    if (req.cancelled || req.interrupted) return 'var(--dt-text-muted)'
+    if (req.cancelled || req.interrupted || req.prevented) return 'var(--dt-text-muted)'
     if (req.type === 'client') return 'var(--dt-emerald)'
     if (req.type === 'prefetch') return 'var(--dt-cyan)'
     if (req.type === 'redirect') return 'var(--dt-amber)'
@@ -63,6 +64,8 @@
         return 'R'
       case 'client':
         return '\u2022' // bullet dot
+      case 'poll':
+        return '\u21bb' // clockwise arrow
       default:
         return ''
     }
@@ -86,9 +89,11 @@
 
   function duration(req: RequestLike): string {
     // Initial page load (synthetic record): show "initial" instead of "0ms"
-    if (req.type === 'full' && req.duration === 0 && req.completed) return 'initial'
+    if (req.initial) return 'initial'
     // Client-side visits are instant — show "client" instead of "0ms"
     if (req.type === 'client') return 'client'
+    // Prevented visits never started — there is no duration to show
+    if (req.prevented) return ''
     // Don't show duration for in-flight requests — avoids stale/confusing numbers
     if (!req.finishedAt) return ''
     const ms = Math.round(req.finishedAt - req.startedAt)
@@ -106,7 +111,7 @@
   /** Map request type to filter category */
   function filterCategory(req: RequestRecord): string {
     const t = req.type
-    if (t === 'partial' || t === 'deferred' || t === 'prefetch' || t === 'client') return t
+    if (t === 'partial' || t === 'deferred' || t === 'prefetch' || t === 'poll' || t === 'client') return t
     const m = (req.method ?? 'GET').toUpperCase()
     if (m !== 'GET') return 'mutations'
     return 'visits'
@@ -145,6 +150,22 @@
     else next.add(cat)
     hiddenTypes = next
   }
+
+  // Group consecutive polls of the same URL (logic in shared/poll-groups.ts)
+  const listEntries = $derived(groupPollEntries(filteredRequests))
+
+  let expandedPollGroups = $state(new Set<string>())
+
+  function isGroupExpanded(group: PollGroup): boolean {
+    return pollGroupExpanded(group, expandedPollGroups, ctx.selectedVisitId)
+  }
+
+  function togglePollGroup(key: string) {
+    const next = new Set(expandedPollGroups)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    expandedPollGroups = next
+  }
 </script>
 
 <div class="request-list-wrapper" style:width="{list.size}px">
@@ -153,7 +174,7 @@
       <div class="filter-bar">
         {#if activeCategories.size > 1}
           <div class="filter-chips">
-            {#each ['visits', 'mutations', 'partial', 'deferred', 'prefetch', 'client'] as cat}
+            {#each ['visits', 'mutations', 'partial', 'deferred', 'prefetch', 'poll', 'client'] as cat (cat)}
               {#if activeCategories.has(cat)}
                 <button
                   class="filter-chip"
@@ -233,7 +254,7 @@
         {/if}
         <div class="session-divider"></div>
       {/if}
-      {#each filteredRequests as req (req.visitId)}
+      {#snippet requestRow(req: RequestRecord, nested: boolean = false)}
         {@const icon = typeIcon(req)}
         {@const redirect = redirectTarget(req)}
         <button
@@ -241,6 +262,7 @@
           class:selected={ctx.selectedVisitId === req.visitId}
           class:in-flight={!req.finishedAt}
           class:deferred={req.parentVisitId != null}
+          class:nested
           aria-current={ctx.selectedVisitId === req.visitId ? 'true' : undefined}
           onclick={() => ctx.selectRequest(req.visitId)}
         >
@@ -270,6 +292,30 @@
             </div>
           {/if}
         </button>
+      {/snippet}
+      {#each listEntries as entry (entry.kind === 'single' ? entry.req.visitId : entry.key)}
+        {#if entry.kind === 'single'}
+          {@render requestRow(entry.req)}
+        {:else}
+          {@const latest = entry.reqs[entry.reqs.length - 1]}
+          {@const expanded = isGroupExpanded(entry)}
+          <button class="request-item poll-group" onclick={() => togglePollGroup(entry.key)}>
+            <div class="request-row">
+              <span class="group-arrow">{expanded ? '▾' : '▸'}</span>
+              <span class="status-dot" style:background={statusColor(latest)}></span>
+              <span class="time">{wallTime(latest)}</span>
+              <span class="method">{methodLabel(latest)}</span>
+              <span class="url" title={latest.url}>{displayLabel(latest)}</span>
+              <span class="type-badge">↻ ×{entry.reqs.length}</span>
+              <span class="duration">{duration(latest)}</span>
+            </div>
+          </button>
+          {#if expanded}
+            {#each entry.reqs as req (req.visitId)}
+              {@render requestRow(req, true)}
+            {/each}
+          {/if}
+        {/if}
       {/each}
     {/if}
   </div>
@@ -464,12 +510,22 @@
     opacity: 0.7;
   }
 
-  .request-item.deferred {
+  .request-item.deferred,
+  .request-item.nested {
     padding-left: 24px;
   }
 
-  .request-item.deferred.selected {
+  .request-item.deferred.selected,
+  .request-item.nested.selected {
     padding-left: 22px;
+  }
+
+  .group-arrow {
+    font-size: 11px;
+    width: 10px;
+    text-align: center;
+    color: var(--dt-text-muted);
+    flex-shrink: 0;
   }
 
   .status-dot {

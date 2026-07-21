@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { DevToolsContext } from './stores.svelte'
-  import { ICON_CLEAR, ICON_MONITOR, ICON_MOON, ICON_SUN, ICON_CLOSE } from './shared/icons'
+  import { ICON_CLEAR, ICON_MONITOR, ICON_MOON, ICON_SUN, ICON_CLOSE, ICON_PIP } from './shared/icons'
   import RequestList from './RequestList.svelte'
   import DetailPane from './panels/DetailPane.svelte'
   import { isNonEmptyRecord } from './shared/storage'
   import { useResizable } from './shared/resizable.svelte'
 
-  let { ctx }: { ctx: DevToolsContext } = $props()
+  let { ctx, pip = false }: { ctx: DevToolsContext; pip?: boolean } = $props()
 
   const errorCount = $derived.by(() => {
     const e = ctx.currentPage?.props?.errors
@@ -86,8 +86,10 @@
   // Prevent scroll events from leaking to the host page
   function trapScroll(e: WheelEvent) {
     let el = e.target as HTMLElement | null
+    // Use the owning document's view — in PiP mode that's the popup window
+    const view = (e.currentTarget as HTMLElement).ownerDocument.defaultView ?? window
     while (el && el !== e.currentTarget) {
-      const { overflowY } = getComputedStyle(el)
+      const { overflowY } = view.getComputedStyle(el)
       if (overflowY === 'auto' || overflowY === 'scroll') {
         const { scrollTop, scrollHeight, clientHeight } = el
         const canScroll = scrollHeight > clientHeight
@@ -102,47 +104,55 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="panel" style:height="{panelHeight.size}px" style:width="{panelWidth.size}px" onwheel={trapScroll}>
-  <!-- Top edge resize handle (height) -->
-  <div
-    class="resize-handle-top"
-    role="separator"
-    aria-orientation="horizontal"
-    aria-label="Resize devtools panel height"
-    onpointerdown={panelHeight.onResizeStart}
-  >
-    <div class="resize-grip"></div>
-  </div>
+<div
+  class="panel"
+  class:pip
+  style:height={pip ? undefined : `${panelHeight.size}px`}
+  style:width={pip ? undefined : `${panelWidth.size}px`}
+  onwheel={trapScroll}
+>
+  {#if !pip}
+    <!-- Top edge resize handle (height) -->
+    <div
+      class="resize-handle-top"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize devtools panel height"
+      onpointerdown={panelHeight.onResizeStart}
+    >
+      <div class="resize-grip"></div>
+    </div>
 
-  <!-- Left edge resize handle (width) -->
-  <div
-    class="resize-handle-left"
-    role="separator"
-    aria-orientation="vertical"
-    aria-label="Resize devtools panel width"
-    onpointerdown={(e) => startSideResize(e, 'left')}
-  ></div>
+    <!-- Left edge resize handle (width) -->
+    <div
+      class="resize-handle-left"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize devtools panel width"
+      onpointerdown={(e) => startSideResize(e, 'left')}
+    ></div>
 
-  <!-- Right edge resize handle (width) -->
-  <div
-    class="resize-handle-right"
-    role="separator"
-    aria-orientation="vertical"
-    aria-label="Resize devtools panel width"
-    onpointerdown={(e) => startSideResize(e, 'right')}
-  ></div>
+    <!-- Right edge resize handle (width) -->
+    <div
+      class="resize-handle-right"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize devtools panel width"
+      onpointerdown={(e) => startSideResize(e, 'right')}
+    ></div>
 
-  <!-- Corner resize handles -->
-  <div
-    class="resize-handle-corner-tl"
-    aria-label="Resize devtools panel"
-    onpointerdown={(e) => startCornerResize(e, 'left')}
-  ></div>
-  <div
-    class="resize-handle-corner-tr"
-    aria-label="Resize devtools panel"
-    onpointerdown={(e) => startCornerResize(e, 'right')}
-  ></div>
+    <!-- Corner resize handles -->
+    <div
+      class="resize-handle-corner-tl"
+      aria-label="Resize devtools panel"
+      onpointerdown={(e) => startCornerResize(e, 'left')}
+    ></div>
+    <div
+      class="resize-handle-corner-tr"
+      aria-label="Resize devtools panel"
+      onpointerdown={(e) => startCornerResize(e, 'right')}
+    ></div>
+  {/if}
 
   <!-- Header bar -->
   <div class="header">
@@ -210,7 +220,25 @@
           >
         {/if}
       </button>
-      <button class="header-btn" onclick={() => ctx.togglePanel()} title="Close panel">
+      {#if !pip}
+        <button class="header-btn" onclick={() => ctx.openPip()} title="Open in separate window">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round">{@html ICON_PIP}</svg
+          >
+        </button>
+      {/if}
+      <button
+        class="header-btn"
+        onclick={() => (pip ? ctx.closePip() : ctx.togglePanel())}
+        title={pip ? 'Close window' : 'Close panel'}
+      >
         <svg
           width="14"
           height="14"
@@ -246,6 +274,17 @@
     display: flex;
     flex-direction: column;
     z-index: 2147483646;
+  }
+
+  /* PiP window: the panel owns the whole document — no chrome, no resize */
+  .panel.pip {
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    transform: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
   }
 
   /* Top edge handle (height) */

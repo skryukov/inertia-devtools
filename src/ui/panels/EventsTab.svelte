@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { RequestRecord, CapturedEvent } from '../../core/types'
+  import { eventCategory, eventColor, type EventCategory } from '../shared/event-meta'
   import TreeView from '../shared/TreeView.svelte'
 
   let { request }: { request: RequestRecord } = $props()
@@ -72,6 +73,7 @@
     if (request.completed) parts.push('completed')
     else if (request.interrupted) parts.push('interrupted')
     else if (request.cancelled) parts.push('cancelled')
+    else if (request.prevented) parts.push('prevented')
     else parts.push('in progress')
     return parts.join(' · ')
   })
@@ -115,7 +117,6 @@
   let expandedId = $state<number | null>(null)
   let expandedProgressGroup = $state<number | null>(null)
 
-  type EventCategory = 'lifecycle' | 'navigation' | 'outcome' | 'other'
   let activeFilters = $state(new Set<EventCategory>(['lifecycle', 'navigation', 'outcome', 'other']))
 
   const categoryLabels: { key: EventCategory; label: string }[] = [
@@ -124,13 +125,6 @@
     { key: 'outcome', label: 'Outcome' },
     { key: 'other', label: 'Other' },
   ]
-
-  function categorizeEvent(name: string): EventCategory {
-    if (name.includes('before') || name.includes('start') || name.includes('finish')) return 'lifecycle'
-    if (name.includes('navigate') || name.includes('beforeUpdate')) return 'navigation'
-    if (name.includes('success') || name.includes('error') || name.includes('Exception')) return 'outcome'
-    return 'other'
-  }
 
   function toggleFilter(cat: EventCategory) {
     const next = new Set(activeFilters)
@@ -178,7 +172,7 @@
 
   const filteredGroups = $derived(
     groupedEvents.filter((g) => {
-      if (g.type === 'single') return activeFilters.has(categorizeEvent(g.event.name))
+      if (g.type === 'single') return activeFilters.has(eventCategory(g.event.name))
       return activeFilters.has('other') // progress is in 'other'
     }),
   )
@@ -187,17 +181,6 @@
     const first = request.events[0]?.timestamp ?? ts
     const offset = ts - first
     return `+${Math.round(offset)}ms`
-  }
-
-  function eventColor(name: string): string {
-    if (name.includes('error') || name.includes('Exception')) return 'var(--dt-red)'
-    if (name.includes('success') || name.includes('finish')) return 'var(--dt-green)'
-    if (name.includes('before') || name.includes('start')) return 'var(--dt-blue)'
-    if (name.includes('navigate')) return 'var(--dt-accent)'
-    if (name.includes('prefetch')) return 'var(--dt-cyan)'
-    if (name.includes('cancel')) return 'var(--dt-amber)'
-    if (name.includes('progress')) return 'var(--dt-teal)'
-    return 'var(--dt-text-muted)'
   }
 
   function shortName(name: string): string {
@@ -302,7 +285,12 @@
           {/if}
           <span class="event-time">{eventTime(event.timestamp)}</span>
           <span class="event-dot" style:background={eventColor(event.name)}></span>
-          <span class="event-name" style:color={eventColor(event.name)}>{shortName(event.name)}</span>
+          <span class="event-name" style:color={eventColor(event.name)}
+            >{shortName(event.name)}{#if event.heuristic}<span
+                class="heuristic-marker"
+                title="Attributed by heuristic — this event carries no visit id">~</span
+              >{/if}</span
+          >
           {#if expandable}
             <span class="detail-hint"
               >{detailKeyCount(event.detail)} {detailKeyCount(event.detail) === 1 ? 'key' : 'keys'}</span
@@ -333,8 +321,8 @@
               >
                 <span class="expand-arrow" class:open={isExpanded}>{isExpanded ? '\u25BE' : '\u25B8'}</span>
                 <span class="event-time">{eventTime(events[0].timestamp)}</span>
-                <span class="event-dot" style:background={eventColor('progress')}></span>
-                <span class="event-name" style:color={eventColor('progress')}>
+                <span class="event-dot" style:background={eventColor('inertia:progress')}></span>
+                <span class="event-name" style:color={eventColor('inertia:progress')}>
                   progress <span class="progress-count">&times;{events.length}</span>
                   {#if lastProgressPercent(events)}
                     <span class="progress-pct">{lastProgressPercent(events)}</span>
@@ -584,6 +572,14 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+  }
+
+  .heuristic-marker {
+    color: var(--dt-text-muted);
+    opacity: 0.6;
+    font-weight: 400;
+    margin-left: 1px;
+    cursor: help;
   }
 
   .progress-count {
