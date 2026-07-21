@@ -10,7 +10,7 @@
   },
   "type": "module",
   "sideEffects": [
-    "./dist/entry.js"
+    "./dist/*.js"
   ],
   "exports": {
     ".": {

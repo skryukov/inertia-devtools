@@ -31,6 +31,10 @@ export default defineConfig({
     alias: {
       $core: resolve(__dirname, 'src/core'),
       $ui: resolve(__dirname, 'src/ui'),
+      // Svelte's main entry registers its version in window.__svelte.v, which
+      // triggers the "multiple Svelte versions" dev warning in Svelte host
+      // apps; compilerOptions.discloseVersion only covers compiled components.
+      'svelte/internal/disclose-version': resolve(__dirname, 'src/noop-module.ts'),
     },
   },
 })

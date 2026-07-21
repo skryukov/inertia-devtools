@@ -1,4 +1,5 @@
 import { DevToolsStore } from './core/store'
+import { createInRealmClient } from './core/client'
 import { startCapture } from './core/capture'
 import { startInterceptorCapture } from './core/interceptors'
 import { startNetworkCapture } from './core/network'
@@ -10,6 +11,10 @@ declare global {
     __INERTIA_DEVTOOLS_STORE__?: DevToolsStore
   }
 }
+
+// Browser package without Node types — process exists only via bundler
+// replacement (see isProdBuild below).
+declare const process: { env: Record<string, string | undefined> }
 
 let initialized = false
 let defaultOptions: DevToolsOptions = {}
@@ -51,6 +56,10 @@ function init(options: DevToolsOptions): void {
       (url) => store.isInertiaRequestUrl(url),
       (timing) => store.captureNetworkTiming(timing),
     )
+
+    // Hard reloads (409/inertia:location) land inside the session-save
+    // debounce window — flush so the record that explains the reload survives
+    window.addEventListener('pagehide', () => store.flushPendingSave())
   } catch (err) {
     if (typeof console !== 'undefined') {
       console.groupCollapsed('[inertia-devtools] Failed to start capture')
@@ -77,9 +86,11 @@ async function mountUI(store: DevToolsStore, options: DevToolsOptions): Promise<
 
     const shadow = host.attachShadow({ mode: 'open' })
 
-    // Mount the devtools app (lazy-loaded)
+    // Mount the devtools app (lazy-loaded) — the UI talks to the store
+    // only through StoreClient, the same interface future shells (PiP,
+    // iframe, extension) implement over a real transport
     const { mountDevTools } = await import('./ui/mount')
-    mountDevTools(shadow, store, options)
+    mountDevTools(shadow, createInRealmClient(store), options)
   } catch (err) {
     if (typeof console !== 'undefined') {
       console.groupCollapsed('[inertia-devtools] Failed to mount UI')
@@ -89,10 +100,29 @@ async function mountUI(store: DevToolsStore, options: DevToolsOptions): Promise<
   }
 }
 
+/**
+ * Auto-init must never reach production. Bundlers textually replace
+ * `process.env.NODE_ENV`, so the expression must stay bare for the
+ * replacement to make this branch dead code in prod builds (a `typeof
+ * process` guard would survive replacement and defeat the gate in browsers).
+ * Where nothing replaces it and no `process` global exists (Vite dev serves
+ * this package unbundled), the ReferenceError lands in the catch and
+ * boot-on-import behavior is preserved.
+ * An explicit createInertiaDevtools() call is NOT gated — intentionally
+ * shipping devtools (strip disabled + explicit call) stays possible.
+ */
+const isProdBuild = (() => {
+  try {
+    return process.env.NODE_ENV === 'production'
+  } catch {
+    return false
+  }
+})()
+
 // Auto-init on side-effect import: `import 'inertia-devtools'`
 // Runs immediately if no explicit createInertiaDevtools() call is made.
 // Uses a microtask to allow createInertiaDevtools() to be called first.
-if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined' && !isProdBuild) {
   queueMicrotask(() => {
     if (!initialized) {
       init(defaultOptions)
