@@ -2,6 +2,8 @@
 
 In-app developer tools for [Inertia.js](https://inertiajs.com/) v3.4+. See what happens behind every click.
 
+Inertia 3.6 features — `inertia:location` redirect details and `router.poll()` detection — light up automatically and degrade gracefully on 3.4/3.5. Known 3.4/3.5 limits: polls appear as ordinary reloads (partial when `only`/`except` is used), and 409 hard reloads fire no Inertia event — they surface best-effort via Resource Timing (Chromium 109+) as "409 Conflict — server forced a full page reload". On all versions, capture is scoped to Inertia router visits — `useHttp` calls, precognition requests, and custom HTTP clients don't go through it.
+
 <p align="center">
   <img src=".github/screenshot.png" alt="Inertia DevTools screenshot" width="800">
 </p>
@@ -44,11 +46,16 @@ if (process.env.NODE_ENV === 'development') {
 }
 ```
 
+Importing the module auto-initializes devtools in development. The auto-init is gated on your bundler's `process.env.NODE_ENV` replacement, so production builds get dead code even without the Vite strip plugin — but only the plugin guarantees zero shipped bytes.
+
+> [!NOTE]
+> When the Vite plugin is active, pass options to `inertiaDevtools({ ... })` in `vite.config.ts` — the plugin initializes devtools before app code runs, so a later `createInertiaDevtools(options)` call in the app is a no-op.
+
 ## Features
 
 ### Props Inspector
 
-Browse page props in an expandable tree. Toggle byte sizes per prop.
+Browse page props in an expandable tree. Search by key or value — matches highlight and auto-expand. Toggle byte sizes per prop.
 
 ### Props Diff
 
@@ -56,7 +63,9 @@ Compare props between navigations. Added, removed, and changed keys are highligh
 
 ### Network Tab
 
-Actual HTTP request/response data from the wire: status codes, request and response headers (`X-Inertia-*` highlighted), timing, and payload size — captured via Inertia's dev-mode interceptors. When interceptors are unavailable, falls back to timing-only data with protocol fields inferred from client-side state.
+HTTP request/response data as Inertia's router sees it: status codes, request and response headers (`X-Inertia-*` highlighted), timing, and payload size — captured via Inertia's dev-mode interceptors. Request headers are snapshotted before Inertia's HTTP client adds `X-XSRF-TOKEN` and `Content-Type`, and redirect hops are followed transparently (a POST → 303 → GET shows as one record with the final status) — for raw HTTP truth, use the browser's Network panel. When interceptors are unavailable, falls back to timing-only data with protocol fields inferred from client-side state.
+
+If your server emits a [`Server-Timing`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Server-Timing) header, its metrics (database, view, etc.) render as a per-request breakdown with proportional bars.
 
 ### Events Timeline
 
@@ -83,6 +92,7 @@ Badges appear automatically for active Inertia features:
 | ONCE          | Once props                         |
 | PREFETCH      | Prefetched request                 |
 | CACHED        | Served from the prefetch cache     |
+| POLL          | `router.poll()` traffic            |
 | FLASH         | Flash data present                 |
 | REMEMBER      | Remembered local state             |
 | ENCRYPTED     | Encrypted history                  |
@@ -92,16 +102,18 @@ Each badge links to the relevant documentation page.
 
 ### Request Filtering
 
-Toggle visibility by category: visits, mutations, partial, deferred, prefetch, and client-side visits.
+Toggle visibility by category: visits, mutations, partial, deferred, prefetch, poll, and client-side visits.
 
-### Copy as Markdown
+### Copy for AI
 
-Copy structured context (summary, props diff, errors, features) for GitHub issues or AI chats.
+Every tab has a context-aware Copy button: full request summary, props diff, events timeline, or network data as focused markdown for GitHub issues and AI chats — plus a stable JSON export of the whole request record.
 
 ### More
 
+- **Picture-in-Picture** -- pop the panel out into its own window
 - **Dark/light/system theme** with manual override
-- **Keyboard navigation** -- arrow keys to browse requests, Escape to deselect
+- **Replay** -- re-issue a selected GET visit (same partial-reload keys) from the panel; non-GET replays are refused since they would re-submit the mutation. Needs the app's router — automatic with the Vite plugin, manual installs pass `router` in options
+- **Keyboard navigation** -- `Alt+Shift+D` toggles the panel; arrow keys browse requests, Escape deselects
 - **Previous session** -- requests from before page reload in a collapsible section
 - **Draggable trigger** -- floating icon with position persisted to localStorage
 - **Shadow DOM isolation** -- styles never leak into your app
@@ -114,6 +126,7 @@ createInertiaDevtools({
   styleNonce: 'abc123', // CSP nonce for Shadow DOM styles
   enabled: true, // set to false to disable
   docsProvider: 'inertiajs', // or 'inertia-rails'
+  router, // pass @inertiajs/core's router to enable Replay (the Vite plugin injects it automatically)
 })
 ```
 
@@ -123,10 +136,12 @@ Listens to Inertia DOM events and correlates them into request records by visit 
 
 The UI renders inside a Shadow DOM -- your app styles are never affected. State is kept in a bounded buffer (200 requests max).
 
+In production builds the Vite plugin resolves devtools imports to a no-op, so `import 'inertia-devtools'` can stay in your code permanently — zero bytes ship to users. Opt out with `inertiaDevtools({ stripInProduction: false })`.
+
 ## Requirements
 
 - [Inertia.js](https://inertiajs.com/) v3.4+
-- Modern browser (ES2020+)
+- Modern evergreen browser (ES2022 build target; uses `Array.prototype.toSorted`, ES2023)
 
 ### Version compatibility
 
