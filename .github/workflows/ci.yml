@@ -21,6 +21,9 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
+      # tsc silently ignores .svelte files, so `strict: true` said nothing
+      # about roughly half the source. svelte-check is what actually gates it.
+      - run: npm run check:svelte
       - run: npm test
       - run: npm run build
 

@@ -13,6 +13,7 @@
 
   // client is a stable instance — intentionally captured once.
   // The PiP window reuses the docked shell's context so state stays in sync.
+  // svelte-ignore state_referenced_locally
   const ctx = sharedCtx ?? createDevToolsContext(client, { styleNonce })
 
   let rootEl: HTMLDivElement
