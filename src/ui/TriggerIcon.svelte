@@ -47,7 +47,15 @@
     } else {
       setEffect('success')
     }
+  })
 
+  // Cleanup belongs to the component's lifetime, NOT to each re-run of the
+  // effect above. That effect depends on `tick`, so Svelte tore it down on
+  // every store notify — killing the 1500ms reset timer — and setEffect then
+  // early-returned because the classification had not changed, so no new timer
+  // was scheduled. The indicator latched on its last state and never pulsed
+  // again for the rest of the session.
+  $effect(() => {
     return () => {
       if (effectTimeout) clearTimeout(effectTimeout)
     }

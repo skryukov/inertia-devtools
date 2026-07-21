@@ -3,7 +3,7 @@ import { createInRealmClient } from './core/client'
 import { startCapture } from './core/capture'
 import { startInterceptorCapture } from './core/interceptors'
 import { startNetworkCapture } from './core/network'
-import type { DevToolsOptions } from './core/types'
+import type { DevToolsOptions, StopFunction } from './core/types'
 
 declare global {
   interface Window {
@@ -18,6 +18,34 @@ declare const process: { env: Record<string, string | undefined> }
 
 let initialized = false
 let defaultOptions: DevToolsOptions = {}
+/**
+ * Capture teardowns. Every start* function returns one and all three used to be
+ * discarded, along with the `pagehide` listener — so during the devtools' own
+ * HMR each reload stacked another set of live listeners on the page, while the
+ * re-evaluated module was a permanent no-op: `initialized` resets but
+ * `window.__INERTIA_DEVTOOLS__` does not.
+ */
+const teardowns: StopFunction[] = []
+
+/**
+ * Stop capture and release the init guards so a fresh `createInertiaDevtools()`
+ * can take over. Used by the HMR hook below; exported because a host that
+ * mounts devtools conditionally needs a way back out.
+ */
+export function destroyInertiaDevtools(): void {
+  while (teardowns.length) {
+    try {
+      teardowns.pop()?.()
+    } catch {
+      /* teardown must not throw on the way out either */
+    }
+  }
+  initialized = false
+  if (typeof window !== 'undefined') {
+    delete window.__INERTIA_DEVTOOLS__
+    delete window.__INERTIA_DEVTOOLS_STORE__
+  }
+}
 
 export function createInertiaDevtools(options: DevToolsOptions = {}): void {
   defaultOptions = options
@@ -61,22 +89,26 @@ function init(options: DevToolsOptions): void {
   try {
     // Start capturing events immediately (client-side visits arrive
     // via the inertia:clientVisit event — no history API patching needed)
-    startCapture(store)
+    teardowns.push(startCapture(store))
 
     // Capture wire data (headers/status/body size) via Inertia's dev-mode
     // interceptors; subscribes lazily since createInertiaApp() runs after us
-    startInterceptorCapture(store)
+    teardowns.push(startInterceptorCapture(store))
 
     // PerformanceObserver supplies timing/transferSize, and is the only
     // network source when interceptors are unavailable (dev: false)
-    startNetworkCapture(
-      (url) => store.isInertiaRequestUrl(url),
-      (timing) => store.captureNetworkTiming(timing),
+    teardowns.push(
+      startNetworkCapture(
+        (url) => store.isInertiaRequestUrl(url),
+        (timing) => store.captureNetworkTiming(timing),
+      ),
     )
 
     // Hard reloads (409/inertia:location) land inside the session-save
     // debounce window — flush so the record that explains the reload survives
-    window.addEventListener('pagehide', () => store.flushPendingSave())
+    const flush = () => store.flushPendingSave()
+    window.addEventListener('pagehide', flush)
+    teardowns.push(() => window.removeEventListener('pagehide', flush))
   } catch (err) {
     if (typeof console !== 'undefined') {
       console.groupCollapsed('[inertia-devtools] Failed to start capture')

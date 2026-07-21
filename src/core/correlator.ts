@@ -19,7 +19,13 @@ const MAX_PENDING_NETWORK = 10
 /** Per-record event cap — see appendEvent. */
 const MAX_EVENTS_PER_RECORD = 500
 
-const MAX_PENDING_PREFETCH = 20
+/**
+ * Prefetch before-events awaiting their start. A page using `prefetch="mount"`
+ * on a list fires all of them at once, so 20 was far too low: the overflow was
+ * FIFO-dropped and those visits then had no record at all — no row, no trace.
+ * Entries are tiny and drained on start; this only has to survive one burst.
+ */
+const MAX_PENDING_PREFETCH = 200
 const NETWORK_TIMING_TOLERANCE_MS = 2000
 
 /**
@@ -449,10 +455,18 @@ export class Correlator {
       // On initial page load, deferred before-events may have fired before
       // this navigate event. Link orphaned deferred records to this parent
       // and set their previousPage to the initial page state.
-      for (const r of this.records.values()) {
-        if (r.type === 'deferred' && r.parentVisitId === undefined) {
-          r.parentVisitId = recordId
-          r.previousPage = page
+      //
+      // Guarded to that initial load, which the comment always claimed but the
+      // code never checked: every back/forward navigation also produces a
+      // synthetic record (popstate fires with a fresh unknown uid), so this
+      // adopted long-finished deferred records mid-session, gave them a parent
+      // that started after they did, and overwrote their diff baseline.
+      if (record.initial) {
+        for (const r of this.records.values()) {
+          if (r.type === 'deferred' && r.parentVisitId === undefined) {
+            r.parentVisitId = recordId
+            r.previousPage = page
+          }
         }
       }
     }

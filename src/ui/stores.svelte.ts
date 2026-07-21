@@ -114,8 +114,23 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
     selectedVisitId = null
   }
 
+  /**
+   * Ids the request list is actually showing, in display order. Arrow keys used
+   * to walk `state.requests` — the whole buffer — so with a filter active they
+   * selected rows that were not in the list and the panel appeared to jump to
+   * nothing. The list reports what it renders; if it has not yet (first frame),
+   * fall back to the buffer.
+   */
+  let visibleRequestIds = $state<number[]>([])
+  function setVisibleRequestIds(ids: number[]) {
+    visibleRequestIds = ids
+  }
+  function navigableIds(): number[] {
+    return visibleRequestIds.length > 0 ? visibleRequestIds : state.requests.map((r) => r.visitId)
+  }
+
   function selectNextRequest() {
-    const reqs = state.requests
+    const reqs = navigableIds().map((id) => ({ visitId: id }))
     if (reqs.length === 0) return
     if (selectedVisitId === null) {
       selectedVisitId = reqs[0].visitId
@@ -128,7 +143,7 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
   }
 
   function selectPrevRequest() {
-    const reqs = state.requests
+    const reqs = navigableIds().map((id) => ({ visitId: id }))
     if (reqs.length === 0) return
     if (selectedVisitId === null) {
       selectedVisitId = reqs[reqs.length - 1].visitId
@@ -283,6 +298,7 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
     selectRequest,
     selectNextRequest,
     selectPrevRequest,
+    setVisibleRequestIds,
     deselectRequest,
     setActiveTab,
     clearAll,

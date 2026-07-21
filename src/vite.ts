@@ -24,6 +24,7 @@ const NOOP_MODULE = [
   'export function createInertiaDevtools() {}',
   'export function startCapture() { return () => {} }',
   'export function createInRealmClient() { return undefined }',
+  'export function destroyInertiaDevtools() {}',
   'export class DevToolsStore {}',
 ].join('\n')
 

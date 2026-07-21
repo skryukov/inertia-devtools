@@ -154,6 +154,23 @@
   // Group consecutive polls of the same URL (logic in shared/poll-groups.ts)
   const listEntries = $derived(groupPollEntries(filteredRequests))
 
+  // Tell the context what is actually on screen, in display order, so arrow
+  // keys walk the visible rows rather than the whole buffer.
+  $effect(() => {
+    ctx.setVisibleRequestIds(filteredRequests.map((r) => r.visitId))
+  })
+
+  /**
+   * Keep the selected row in view. Arrow-key selection moved the highlight
+   * without scrolling, so browsing a long list silently walked off-screen.
+   */
+  let listEl = $state<HTMLElement | undefined>()
+  $effect(() => {
+    const id = ctx.selectedVisitId
+    if (id === null || !listEl) return
+    listEl.querySelector<HTMLElement>(`[data-visit-id="${id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'auto' })
+  })
+
   let expandedPollGroups = $state(new Set<string>())
 
   function isGroupExpanded(group: PollGroup): boolean {
@@ -169,7 +186,7 @@
 </script>
 
 <div class="request-list-wrapper" style:width="{list.size}px">
-  <div class="request-list">
+  <div class="request-list" bind:this={listEl}>
     {#if ctx.state.requests.length > 0}
       <div class="filter-bar">
         {#if activeCategories.size > 1}
@@ -264,6 +281,7 @@
           class:deferred={req.parentVisitId != null}
           class:nested
           aria-current={ctx.selectedVisitId === req.visitId ? 'true' : undefined}
+          data-visit-id={req.visitId}
           onclick={() => ctx.selectRequest(req.visitId)}
         >
           <div class="request-row">

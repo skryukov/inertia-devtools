@@ -56,6 +56,28 @@
     showToast(ok ? 'Copied JSON!' : 'Copy failed — clipboard unavailable')
   }
 
+  const panelId = 'dt-tabpanel'
+  const tabId = (tab: string) => `dt-tab-${tab}`
+
+  /** Roving focus: arrows move between tabs, Home/End jump to the ends. */
+  function handleTabKeydown(e: KeyboardEvent) {
+    const order: readonly string[] = tabs
+    const current = order.indexOf(ctx.activeTab)
+    let next = -1
+    if (e.key === 'ArrowRight') next = (current + 1) % order.length
+    else if (e.key === 'ArrowLeft') next = (current - 1 + order.length) % order.length
+    else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = order.length - 1
+    if (next < 0) return
+    e.preventDefault()
+    // stopPropagation so the panel-wide arrow handler does not also move the
+    // request selection while the user is walking the tab strip.
+    e.stopPropagation()
+    ctx.setActiveTab(order[next])
+    const btn = e.currentTarget as HTMLElement | null
+    btn?.parentElement?.querySelector<HTMLElement>(`#${CSS.escape(tabId(order[next]))}`)?.focus()
+  }
+
   function showToast(message: string) {
     toast = message
     clearTimeout(toastTimeout)
@@ -68,14 +90,24 @@
 <div class="detail-pane">
   {#if ctx.selectedRequest}
     <div class="tab-bar">
+      <!--
+        The WAI-ARIA tabs PATTERN, not just its markup. role="tab" without
+        aria-controls, roving tabindex or arrow-key handling announces a tab
+        widget to a screen reader and then behaves like a row of buttons —
+        worse than plain buttons, because the promise is wrong.
+      -->
       <div class="tab-list" role="tablist">
         {#each tabs as tab (tab)}
           <button
             class="tab"
             class:active={ctx.activeTab === tab}
             role="tab"
+            id={tabId(tab)}
+            aria-controls={panelId}
             aria-selected={ctx.activeTab === tab}
+            tabindex={ctx.activeTab === tab ? 0 : -1}
             onclick={() => ctx.setActiveTab(tab)}
+            onkeydown={handleTabKeydown}
           >
             {tab.charAt(0).toUpperCase() + tab.slice(1)}
           </button>
@@ -132,7 +164,7 @@
       </div>
     </div>
 
-    <div class="tab-content" role="tabpanel">
+    <div class="tab-content" role="tabpanel" id={panelId} aria-labelledby={tabId(ctx.activeTab)} tabindex="0">
       {#if ctx.activeTab === 'props'}
         <PageView
           page={ctx.selectedRequest.page ?? null}
