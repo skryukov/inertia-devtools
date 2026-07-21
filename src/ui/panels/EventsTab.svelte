@@ -115,6 +115,13 @@
 
   let showRawEvents = $state(false)
   let expandedId = $state<number | null>(null)
+  /**
+   * Identified by the group's FIRST EVENT ID, not its position in the filtered
+   * list. An index is only stable while the list is: toggling a filter chip
+   * rebuilds `filteredGroups`, and the stored index then pointed at whichever
+   * group happened to land in that slot — so an unrelated group silently
+   * expanded and the one the user opened silently closed.
+   */
   let expandedProgressGroup = $state<number | null>(null)
 
   let activeFilters = $state(new Set<EventCategory>(['lifecycle', 'navigation', 'outcome', 'other']))
@@ -195,8 +202,8 @@
     expandedId = expandedId === id ? null : id
   }
 
-  function toggleProgressGroup(groupIndex: number) {
-    expandedProgressGroup = expandedProgressGroup === groupIndex ? null : groupIndex
+  function toggleProgressGroup(groupKey: number) {
+    expandedProgressGroup = expandedProgressGroup === groupKey ? null : groupKey
   }
 
   function lastProgressPercent(events: CapturedEvent[]): string {
@@ -305,19 +312,20 @@
       {/snippet}
 
       <div class="event-list">
-        {#each filteredGroups as group, groupIdx (group.type === 'single' ? group.event.id : `pg-${groupIdx}`)}
+        {#each filteredGroups as group (group.type === 'single' ? group.event.id : `pg-${group.events[0].id}`)}
           {#if group.type === 'single'}
             <div class="event-entry">
               {@render eventRow(group.event)}
             </div>
           {:else}
             {@const events = group.events}
-            {@const isExpanded = expandedProgressGroup === groupIdx}
+            {@const groupKey = group.events[0].id}
+            {@const isExpanded = expandedProgressGroup === groupKey}
             <div class="event-entry">
               <button
                 class="event-row expandable"
                 class:expanded={isExpanded}
-                onclick={() => toggleProgressGroup(groupIdx)}
+                onclick={() => toggleProgressGroup(groupKey)}
               >
                 <span class="expand-arrow" class:open={isExpanded}>{isExpanded ? '\u25BE' : '\u25B8'}</span>
                 <span class="event-time">{eventTime(events[0].timestamp)}</span>

@@ -268,11 +268,4 @@
       box-shadow: 0 0 0 8px transparent;
     }
   }
-
-  @media (prefers-reduced-motion: reduce) {
-    .trigger,
-    .trigger.active {
-      animation: none;
-    }
-  }
 </style>

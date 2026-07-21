@@ -29,6 +29,13 @@ const MAX_PENDING_PREFETCH = 200
 const NETWORK_TIMING_TOLERANCE_MS = 2000
 
 /**
+ * How long a cache-fresh prefetch entry, or an in-flight record, can sit before
+ * it is treated as never coming back. Generous: real requests can be slow, and
+ * discarding a live one costs a row.
+ */
+const STALE_IN_FLIGHT_MS = 60_000
+
+/**
  * Correlates individual Inertia events into logical RequestRecords.
  *
  * Correlation strategy (requires Inertia >= 3.4):
@@ -222,14 +229,27 @@ export class Correlator {
   }
 
   private findNetworkMatch(timing: NetworkTiming): RequestRecord | null {
+    // CLOSEST start wins, not newest-first.
+    //
+    // The window is ±2000ms and `router.poll(1000)` produces a run of records
+    // sharing one URL, so several are eligible at once. Returning the first hit
+    // scanning backwards meant a timing that arrived late attached to the newest
+    // eligible record rather than the one it actually belonged to — wrong
+    // duration and wrong Server-Timing on both records, and the true owner then
+    // had none at all.
+    let best: RequestRecord | null = null
+    let bestDelta = Infinity
     for (let i = this.sortedRecords.length - 1; i >= 0; i--) {
       const req = this.sortedRecords[i]
       if (req.network) continue
-      if (this.networkMatchesVisit(timing, req)) {
-        return req
+      if (!this.networkMatchesVisit(timing, req)) continue
+      const delta = Math.abs(timing.startedAt - req.startedAt)
+      if (delta < bestDelta) {
+        best = req
+        bestDelta = delta
       }
     }
-    return null
+    return best
   }
 
   private networkMatchesVisit(timing: NetworkTiming, req: RequestRecord): boolean {
@@ -256,6 +276,18 @@ export class Correlator {
     // other. Prevented prefetches never get a start — record them right away.
     if (!event.prevented && visit?.prefetch && uuid) {
       this.pendingPrefetch.set(uuid, { event, timestamp })
+      // Expire by age, not only by count. This map drains on `inertia:start`,
+      // which a cache-fresh prefetch NEVER fires — so those entries had exactly
+      // one exit: being pushed out by the size cap. Raising that cap 20 -> 200
+      // to stop a `prefetch="mount"` list dropping rows therefore raised the
+      // permanent retention tenfold. Age-based expiry is the actual drain the
+      // cache-hit path was missing.
+      if (this.pendingPrefetch.size > 1) {
+        for (const [key, entry] of this.pendingPrefetch) {
+          if (timestamp - entry.timestamp > STALE_IN_FLIGHT_MS) this.pendingPrefetch.delete(key)
+          else break // insertion-ordered: the first live entry ends the run
+        }
+      }
       if (this.pendingPrefetch.size > MAX_PENDING_PREFETCH) {
         const oldest = this.pendingPrefetch.keys().next().value
         if (oldest !== undefined) this.pendingPrefetch.delete(oldest)
@@ -535,10 +567,18 @@ export class Correlator {
       this.lastPage = page
     }
 
-    // beforeUpdate carries no visit id. Attach to the in-flight non-deferred
-    // record — deferred records receive their page via their own id-carrying
-    // navigate (or at finish).
-    const record = this.resolveInFlight({ excludeDeferred: true })
+    // beforeUpdate carries no visit id. Attach to the in-flight non-deferred,
+    // non-poll record — deferred records receive their page via their own
+    // id-carrying navigate (or at finish).
+    //
+    // Polls are excluded for the same reason prefetches are: a `router.poll()`
+    // tick that starts mid-navigation is the NEWEST in-flight record, so it
+    // stole the user's click visit's beforeUpdate. A poll is background traffic
+    // the user did not initiate; if a click is also in flight, the beforeUpdate
+    // almost certainly belongs to the click.
+    const record =
+      this.resolveInFlight({ excludeDeferred: true, excludePoll: true }) ??
+      this.resolveInFlight({ excludeDeferred: true })
     if (!record) return null
 
     event.heuristic = true
@@ -766,12 +806,17 @@ export class Correlator {
    * Fallback for events that carry no visit id: the most recently started
    * record that has not finished yet.
    */
-  private resolveInFlight(options?: { excludeDeferred?: boolean; excludePrefetch?: boolean }): RequestRecord | null {
+  private resolveInFlight(options?: {
+    excludeDeferred?: boolean
+    excludePrefetch?: boolean
+    excludePoll?: boolean
+  }): RequestRecord | null {
     for (let i = this.sortedRecords.length - 1; i >= 0; i--) {
       const r = this.sortedRecords[i]
       if (r.finishedAt != null) continue
       if (options?.excludeDeferred && r.type === 'deferred') continue
       if (options?.excludePrefetch && r.type === 'prefetch') continue
+      if (options?.excludePoll && r.type === 'poll') continue
       return r
     }
     return null
@@ -803,16 +848,43 @@ export class Correlator {
     }
   }
 
+  /**
+   * Prefers finished records, but no longer treats an unfinished one as
+   * immortal.
+   *
+   * A visit that never finishes — a hung request, a tab backgrounded mid-flight,
+   * a connection dropped without an error event — has `finishedAt == null`
+   * forever. The old loop skipped it looking for something finished and only
+   * fell through to `shift()` when NOTHING was finished, so that one record held
+   * its slot for the life of the page and stayed eligible for the in-flight
+   * fallback, quietly collecting other visits' id-less events.
+   *
+   * An unfinished record older than the whole retained window cannot still be
+   * live, so it is evicted like any other.
+   */
   private evictOldest(): void {
+    const newest = this.sortedRecords[this.sortedRecords.length - 1]
+    const staleBefore = newest ? newest.startedAt - STALE_IN_FLIGHT_MS : -Infinity
+
+    let firstFinished = -1
     for (let i = 0; i < this.sortedRecords.length; i++) {
       const r = this.sortedRecords[i]
-      if (r.finishedAt != null) {
+      // An in-flight record this old is not coming back.
+      if (r.finishedAt == null && r.startedAt < staleBefore) {
         this.sortedRecords.splice(i, 1)
         this.deleteRecord(r)
         return
       }
+      if (firstFinished === -1 && r.finishedAt != null) firstFinished = i
     }
-    // If no completed records, evict the oldest regardless
+
+    if (firstFinished !== -1) {
+      const [r] = this.sortedRecords.splice(firstFinished, 1)
+      this.deleteRecord(r)
+      return
+    }
+
+    // Everything is young and in flight — evict the oldest regardless.
     const oldest = this.sortedRecords.shift()
     if (oldest) {
       this.deleteRecord(oldest)

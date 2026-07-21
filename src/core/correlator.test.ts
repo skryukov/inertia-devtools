@@ -1256,6 +1256,60 @@ describe('Correlator', () => {
   })
 
   describe('record eviction', () => {
+    it('expires cache-fresh prefetch entries by age, not only by count', () => {
+      // pendingPrefetch drains on inertia:start, which a cache-FRESH prefetch
+      // never fires. Those entries had exactly one exit: being pushed out by
+      // the size cap — so raising that cap 20 -> 200 (to stop a prefetch="mount"
+      // list dropping rows) raised the permanent retention tenfold.
+      const c = new Correlator()
+      const stale = makeVisitObject({ prefetch: true, url: new URL('http://localhost/a') })
+      c.processEvent(makeEvent('inertia:before', { visit: stale }, 0))
+
+      // A much later prefetch sweeps the expired one out.
+      const fresh = makeVisitObject({ prefetch: true, url: new URL('http://localhost/b') })
+      c.processEvent(makeEvent('inertia:before', { visit: fresh }, 100_000))
+
+      // The stale entry is gone: its start can no longer promote it to a record.
+      expect(c.processEvent(makeEvent('inertia:start', { visit: stale }, 100_001))).toBeNull()
+      // The fresh one still can.
+      expect(c.processEvent(makeEvent('inertia:start', { visit: fresh }, 100_002))).not.toBeNull()
+    })
+
+    it('evicts a long-dead in-flight record instead of holding its slot forever', () => {
+      // A visit that never finishes — hung request, tab backgrounded mid-flight,
+      // connection dropped with no error event — has finishedAt == null forever.
+      // The loop skipped it looking for something finished and only fell through
+      // to shift() when NOTHING was finished, so it held a buffer slot for the
+      // life of the page AND stayed eligible for the in-flight fallback,
+      // quietly collecting other visits' id-less events.
+      const small = new Correlator(2)
+      const hung = makeVisitObject({ url: new URL('http://localhost/hung') })
+      small.processEvent(makeEvent('inertia:before', { visit: hung }, 0)) // never finishes
+
+      // Two later, finished visits, well past the staleness window.
+      for (const t of [100_000, 200_000]) {
+        const v = makeVisitObject()
+        small.processEvent(makeEvent('inertia:before', { visit: v }, t))
+        small.processEvent(makeEvent('inertia:finish', { visit: { ...v, completed: true } }, t + 10))
+      }
+
+      expect(small.getRequests().some((r) => r.url === '/hung')).toBe(false)
+    })
+
+    it('keeps a RECENT in-flight record — slow is not dead', () => {
+      const small = new Correlator(2)
+      const slow = makeVisitObject({ url: new URL('http://localhost/slow') })
+      small.processEvent(makeEvent('inertia:before', { visit: slow }, 1000))
+
+      for (const t of [1100, 1200]) {
+        const v = makeVisitObject()
+        small.processEvent(makeEvent('inertia:before', { visit: v }, t))
+        small.processEvent(makeEvent('inertia:finish', { visit: { ...v, completed: true } }, t + 10))
+      }
+
+      expect(small.getRequests().some((r) => r.url === '/slow')).toBe(true)
+    })
+
     it('evicts oldest completed record when over capacity', () => {
       const smallCorrelator = new Correlator(3)
 
@@ -1753,6 +1807,47 @@ describe('Correlator', () => {
   })
 
   describe('network timing correlation', () => {
+    it("does not let a poll tick steal a click visit's beforeUpdate", () => {
+      // A router.poll() tick starting mid-navigation is the NEWEST in-flight
+      // record, so the id-less beforeUpdate fallback handed it the user's click
+      // visit's event. Prefetch was excluded from that fallback; poll was not.
+      const click = makeVisitObject({ url: new URL('http://localhost/posts') })
+      correlator.processEvent(makeEvent('inertia:before', { visit: click }, 100))
+      const poll = makeVisitObject({ poll: true, url: new URL('http://localhost/notifications') })
+      const pollRecord = correlator.processEvent(makeEvent('inertia:before', { visit: poll }, 110))
+      expect(pollRecord!.type).toBe('poll')
+
+      const target = correlator.processEvent(makeEvent('inertia:beforeUpdate', {}, 120))
+      expect(target!.url).toBe('/posts')
+    })
+
+    it('still uses a poll for beforeUpdate when it is the only visit in flight', () => {
+      // Excluding polls must not mean polls never receive their own events.
+      const poll = makeVisitObject({ poll: true, url: new URL('http://localhost/notifications') })
+      correlator.processEvent(makeEvent('inertia:before', { visit: poll }, 100))
+      const target = correlator.processEvent(makeEvent('inertia:beforeUpdate', {}, 110))
+      expect(target).not.toBeNull()
+      expect(target!.url).toBe('/notifications')
+    })
+
+    it('attaches a timing to the CLOSEST visit, not the newest eligible one', () => {
+      // router.poll(1000) produces a run of records sharing one URL, and the
+      // match window is +/-2000ms, so several are eligible at once. Scanning
+      // backwards and taking the first hit gave the timing to the newest — the
+      // wrong duration on that record, and none at all on its real owner.
+      const first = makeVisitObject()
+      correlator.processEvent(makeEvent('inertia:before', { visit: first }, 1000))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...first, completed: true } }, 1100))
+      const second = makeVisitObject()
+      correlator.processEvent(makeEvent('inertia:before', { visit: second }, 2000))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...second, completed: true } }, 2100))
+
+      // Clearly the first poll tick's request.
+      const matched = correlator.linkNetworkTiming(makeTiming({ startedAt: 1010, finishedAt: 1090 }))
+      expect(matched).not.toBeNull()
+      expect(matched!.startedAt).toBe(1000)
+    })
+
     it('matches timing to visit by URL and timing', () => {
       const visit = makeVisitObject()
       correlator.processEvent(makeEvent('inertia:before', { visit }, 100))

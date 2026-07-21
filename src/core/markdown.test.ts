@@ -554,6 +554,56 @@ function deeplyBuriedBody() {
   return node
 }
 
+describe('requestToJSON page de-duplication', () => {
+  const page = makePage({ props: { rows: [{ id: 1, blurb: 'x'.repeat(200) }] } })
+
+  it('elides an event page identical to the top-level page', () => {
+    // Three events per visit carry a structuredClone of the page, so a 187 KB
+    // page produced a 1.19 MB export — past a GitHub comment limit and most
+    // context windows, at exactly the size where the feature is most needed.
+    const json = requestToJSON(
+      makeRequest({
+        page,
+        events: [makeEvent(1, 'inertia:success', 10, { page }), makeEvent(2, 'inertia:navigate', 11, { page })],
+      }),
+    )
+    expect(json).toContain('identical to page')
+    // The full props survive exactly once, at the top level.
+    expect(json.match(/x{200}/g)).toHaveLength(1)
+  })
+
+  it('elides against previousPage too', () => {
+    const json = requestToJSON(
+      makeRequest({
+        page: makePage({ props: { other: 1 } }),
+        previousPage: page,
+        events: [makeEvent(1, 'inertia:beforeUpdate', 10, { page })],
+      }),
+    )
+    expect(json).toContain('identical to previousPage')
+  })
+
+  it('keeps an event page that differs from both — it is telling us something', () => {
+    const odd = makePage({ props: { unique: 'KEEP-ME' } })
+    const json = requestToJSON(
+      makeRequest({
+        page,
+        previousPage: makePage({ props: { p: 1 } }),
+        events: [makeEvent(1, 'inertia:success', 10, { page: odd })],
+      }),
+    )
+    expect(json).toContain('KEEP-ME')
+    expect(json).not.toContain('identical to')
+  })
+
+  it('leaves details with no page alone', () => {
+    const json = requestToJSON(
+      makeRequest({ page, events: [makeEvent(1, 'inertia:progress', 10, { percentage: 50 })] }),
+    )
+    expect(json).toContain('"percentage": 50')
+  })
+})
+
 describe('export redaction (page props reach the clipboard)', () => {
   // Rails and Laravel adapters share a live csrf_token in props on EVERY page.
   // "Copy for AI" exists to be pasted into issues and chats, so every exporter

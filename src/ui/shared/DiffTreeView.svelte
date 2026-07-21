@@ -13,7 +13,24 @@
     showUnchanged?: boolean
   } = $props()
 
-  const visibleNodes = $derived(showUnchanged ? nodes : nodes.filter((n) => n.type !== 'unchanged'))
+  /**
+   * Render budget, mirroring TreeView's. This renderer had NO cap and
+   * default-expanded every nested node at every level, so opening the Diff view
+   * on a wide change set mounted the entire changed tree synchronously on the
+   * host app's main thread.
+   */
+  const MAX_RENDERED_NODES = 50
+
+  /**
+   * Depth past which nested nodes start collapsed. Auto-expanding everything is
+   * what made the cap necessary in the first place — a `{region: {day: {...}}}`
+   * shape (metrics dashboards, i18n bundles) multiplies out.
+   */
+  const AUTO_EXPAND_DEPTH = 2
+
+  const matchingNodes = $derived(showUnchanged ? nodes : nodes.filter((n) => n.type !== 'unchanged'))
+  const visibleNodes = $derived(matchingNodes.slice(0, MAX_RENDERED_NODES))
+  const hiddenCount = $derived(matchingNodes.length - visibleNodes.length)
 
   function formatValue(val: unknown): string {
     return inlineValue(val, 60)
@@ -38,7 +55,10 @@
   $effect(() => {
     if (nestedKeyFingerprint !== prevFingerprint) {
       prevFingerprint = nestedKeyFingerprint
-      expandedKeys = new Set(nestedKeys())
+      // Past AUTO_EXPAND_DEPTH the user opens what they want to see. Expanding
+      // every level meant the cost of the whole subtree was paid before anyone
+      // had asked to look at it.
+      expandedKeys = depth < AUTO_EXPAND_DEPTH ? new Set(nestedKeys()) : new Set()
     }
   })
 
@@ -51,7 +71,7 @@
 </script>
 
 <div class="diff-tree" style:padding-left="{depth * 14}px">
-  {#if visibleNodes.length === 0}
+  {#if matchingNodes.length === 0}
     <span class="no-changes">No changes</span>
   {/if}
   {#each visibleNodes as node (node.key)}
@@ -87,6 +107,9 @@
       {/if}
     </div>
   {/each}
+  {#if hiddenCount > 0}
+    <div class="diff-truncated">… {hiddenCount} more {hiddenCount === 1 ? 'change' : 'changes'} not shown</div>
+  {/if}
 </div>
 
 <style>
@@ -205,5 +228,12 @@
     color: var(--dt-text-muted);
     font-style: italic;
     padding: 4px 0;
+  }
+
+  .diff-truncated {
+    color: var(--dt-text-dim);
+    font-size: 11px;
+    font-style: italic;
+    padding: 2px 0;
   }
 </style>

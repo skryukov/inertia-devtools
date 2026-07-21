@@ -203,9 +203,18 @@
     </div>
   {/if}
 
-  {#if toast}
-    <div class="toast">{toast}</div>
-  {/if}
+  <!--
+    role="status" + aria-live: the copy-failure toast is the ONLY feedback that
+    a clipboard write was blocked, and without a live region a screen-reader
+    user got nothing at all — the button appeared to succeed. Rendered
+    unconditionally so the region exists before the text arrives; announcing
+    into a region that is inserted at the same moment is unreliable.
+  -->
+  <div class="toast-region" role="status" aria-live="polite">
+    {#if toast}
+      <div class="toast">{toast}</div>
+    {/if}
+  </div>
 </div>
 
 <style>

@@ -5,7 +5,7 @@
  */
 
 import type { RequestRecord, CapturedEvent } from './types'
-import { diffProps, type DiffNode } from './diff'
+import { diffProps, deepEqual, type DiffNode } from './diff'
 import { getFeatureInfo } from './feature-info'
 import { sortedHeaders } from './headers'
 import { redactExport } from './redact'
@@ -307,6 +307,33 @@ export function diffToMarkdown(request: RequestRecord): string {
  * exported every HTTP error as "Outcome: completed", which is the one line a
  * reader skims to find out whether the request worked.
  */
+/**
+ * Replace an event detail's `page` with a marker when it is byte-for-byte the
+ * page already emitted at the top level.
+ *
+ * `safeSerializeDetail` structuredClones the page verbatim, and three events per
+ * visit carry one (navigate, success, beforeUpdate) — so a 187 KB page produced
+ * a 1.19 MB export, 6.5x amplification, of which everything past the first two
+ * copies was byte-identical. "Copy JSON" exists to be pasted into a GitHub issue
+ * or an AI chat, and at that size it exceeds a comment limit and most context
+ * windows. It failed at exactly the payload size where it was most needed.
+ *
+ * Lossless: only an exact duplicate is elided. An event whose page differs from
+ * both top-level pages is emitted in full, because then it is telling us
+ * something.
+ */
+function dedupePageInDetail(detail: Record<string, unknown>, request: RequestRecord): Record<string, unknown> {
+  const page = detail?.page
+  if (!page || typeof page !== 'object') return detail
+  if (request.page && deepEqual(page, request.page)) {
+    return { ...detail, page: '<identical to page — omitted to keep the export pasteable>' }
+  }
+  if (request.previousPage && deepEqual(page, request.previousPage)) {
+    return { ...detail, page: '<identical to previousPage — omitted to keep the export pasteable>' }
+  }
+  return detail
+}
+
 function outcomeLabel(request: RequestRecord): string {
   if (request.prevented) return 'prevented'
   if (request.interrupted) return 'interrupted'
@@ -413,7 +440,12 @@ export function requestToJSON(request: RequestRecord): string {
     network: request.network,
     page: request.page,
     previousPage: request.previousPage,
-    events: request.events.map(({ name, timestamp, detail, prevented }) => ({ name, timestamp, detail, prevented })),
+    events: request.events.map(({ name, timestamp, detail, prevented }) => ({
+      name,
+      timestamp,
+      detail: dedupePageInDetail(detail, request),
+      prevented,
+    })),
   }
 
   try {

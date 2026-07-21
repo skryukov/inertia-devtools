@@ -134,6 +134,9 @@
   const hasPrevious = $derived(prevProps !== undefined)
   let showDiff = $state(false)
   let showUnchanged = $state(false)
+  // Recomputes once per prop-tree change, not per render: $derived memoizes on
+  // its dependencies. The count is shown in the Diff button's badge, so it has
+  // to be computed whether or not the Diff view is open.
   const changeCount = $derived(
     hasPrevious ? countTopLevelChanges(prevProps as Record<string, unknown>, pageProps as Record<string, unknown>) : 0,
   )

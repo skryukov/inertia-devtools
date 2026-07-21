@@ -141,6 +141,30 @@ export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
       font-size: 13px;
       line-height: 1.4;
       color: var(--dt-text);
+
+      /*
+       * Shadow DOM isolation is ONE-directional. It stops our styles leaking
+       * out, but every INHERITED property still crosses in from the host page,
+       * and only font/size/line-height/color were being reset. A host setting
+       * direction rtl on body rendered the entire panel right-to-left; one
+       * setting text-transform uppercase SHOUTED every label; a letter-spacing
+       * chosen for a display typeface spaced out the monospace prop tree. All
+       * are real things apps set on body.
+       */
+      direction: ltr;
+      text-align: left;
+      letter-spacing: normal;
+      word-spacing: normal;
+      text-transform: none;
+      text-indent: 0;
+      font-weight: 400;
+      font-style: normal;
+      font-variant: normal;
+      white-space: normal;
+      text-shadow: none;
+      list-style: none;
+      visibility: visible;
+      cursor: auto;
     }
 
     ${lightScope} {
@@ -205,6 +229,30 @@ export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
 
     #inertia-devtools-root {
       pointer-events: auto;
+    }
+
+    /*
+     * One global rule instead of a per-component opt-in. There was a
+     * reduced-motion block in TriggerIcon that named '.trigger, .trigger.active'
+     * — but the animated classes are '.trigger.pulse' and an infinite 'orbit',
+     * so it covered neither, and PageView's infinite '.live-dot' pulse had no
+     * block at all. Two of six animations honoured the preference.
+     *
+     * !important is deliberate: Svelte's scoped styles carry an attribute
+     * selector, so anything less loses on specificity — which is exactly how
+     * the old rule was defeated. This is the canonical accessibility pattern.
+     * A near-zero duration rather than 'none' so animationend still fires and
+     * nothing waiting on it hangs.
+     */
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
     }
   `
 }
