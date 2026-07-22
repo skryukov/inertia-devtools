@@ -12,10 +12,6 @@ declare global {
   }
 }
 
-// Browser package without Node types — process exists only via bundler
-// replacement (see isProdBuild below).
-declare const process: { env: Record<string, string | undefined> }
-
 let initialized = false
 let defaultOptions: DevToolsOptions = {}
 /**

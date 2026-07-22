@@ -17,6 +17,13 @@ import { getBaseStyles } from './mount'
  * so the guarantee survives independent of any external audit tooling.
  */
 
+// sRGB transfer functions, hoisted to module scope (they close over nothing).
+const srgbGamma = (x: number) => {
+  const v = x <= 0.0031308 ? 12.92 * x : 1.055 * x ** (1 / 2.4) - 0.055
+  return Math.max(0, Math.min(1, v))
+}
+const srgbLinearize = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+
 function oklchToSrgb(L: number, C: number, hDeg: number) {
   const h = (hDeg * Math.PI) / 180
   const a = C * Math.cos(h)
@@ -30,16 +37,11 @@ function oklchToSrgb(L: number, C: number, hDeg: number) {
   const lr = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
   const lg = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
   const lb = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
-  const gamma = (x: number) => {
-    const v = x <= 0.0031308 ? 12.92 * x : 1.055 * x ** (1 / 2.4) - 0.055
-    return Math.max(0, Math.min(1, v))
-  }
-  return [gamma(lr), gamma(lg), gamma(lb)] as const
+  return [srgbGamma(lr), srgbGamma(lg), srgbGamma(lb)] as const
 }
 
 function relativeLuminance([r, g, b]: readonly [number, number, number]) {
-  const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
-  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+  return 0.2126 * srgbLinearize(r) + 0.7152 * srgbLinearize(g) + 0.0722 * srgbLinearize(b)
 }
 
 function contrast(fg: readonly [number, number, number], bg: readonly [number, number, number]) {
