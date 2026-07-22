@@ -136,35 +136,6 @@ export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
       --dt-row-added: oklch(0.723 0.191 149 / 0.08);
       --dt-row-removed: oklch(0.627 0.222 25 / 0.08);
       --dt-row-changed: oklch(0.795 0.184 86 / 0.08);
-
-      font-family: system-ui, -apple-system, sans-serif;
-      font-size: 13px;
-      line-height: 1.4;
-      color: var(--dt-text);
-
-      /*
-       * Shadow DOM isolation is ONE-directional. It stops our styles leaking
-       * out, but every INHERITED property still crosses in from the host page,
-       * and only font/size/line-height/color were being reset. A host setting
-       * direction rtl on body rendered the entire panel right-to-left; one
-       * setting text-transform uppercase SHOUTED every label; a letter-spacing
-       * chosen for a display typeface spaced out the monospace prop tree. All
-       * are real things apps set on body.
-       */
-      direction: ltr;
-      text-align: left;
-      letter-spacing: normal;
-      word-spacing: normal;
-      text-transform: none;
-      text-indent: 0;
-      font-weight: 400;
-      font-style: normal;
-      font-variant: normal;
-      white-space: normal;
-      text-shadow: none;
-      list-style: none;
-      visibility: visible;
-      cursor: auto;
     }
 
     ${lightScope} {
@@ -239,8 +210,39 @@ export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
       background: var(--dt-text-muted);
     }
 
+    /*
+     * Typography and the inheritance reset live HERE, on the mount container
+     * inside the shadow tree — NOT on the shadow host. Shadow isolation is
+     * one-directional and, worse, per CSS Scoping L1 section 3.3 a normal
+     * declaration in the outer tree that matches the host element WINS over a
+     * host-scoped rule for inherited properties. So a host app rule like
+     * "div { direction: rtl }" (the host element IS a div) beat a host-scoped
+     * "direction: ltr" reset and rendered the whole panel right-to-left;
+     * "text-transform: uppercase" on body SHOUTED every label. An element inside
+     * the shadow tree is unreachable from the outer tree, so the reset holds —
+     * and stays a NORMAL declaration, so components can still set their own
+     * font-weight/white-space without fighting !important.
+     */
     #inertia-devtools-root {
       pointer-events: auto;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      line-height: 1.4;
+      color: var(--dt-text);
+      direction: ltr;
+      text-align: left;
+      letter-spacing: normal;
+      word-spacing: normal;
+      text-transform: none;
+      text-indent: 0;
+      font-weight: 400;
+      font-style: normal;
+      font-variant: normal;
+      white-space: normal;
+      text-shadow: none;
+      list-style: none;
+      visibility: visible;
+      cursor: auto;
     }
 
     /*

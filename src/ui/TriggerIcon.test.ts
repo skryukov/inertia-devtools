@@ -114,3 +114,39 @@ describe('TriggerIcon drag vs click', () => {
     await expect(fireEvent.pointerCancel(el, { clientX: 240, clientY: 180, pointerId: 1 })).resolves.toBeTruthy()
   })
 })
+
+describe('TriggerIcon stays on screen (B11)', () => {
+  afterEach(() => {
+    cleanup()
+    localStorage.clear()
+  })
+
+  it('clamps a restored off-screen position into the current viewport', () => {
+    // Saved on a wide monitor, reopened on a laptop: the right/bottom offset
+    // used to exceed the viewport and put the button ~1200px off-screen with no
+    // way back but clearing localStorage.
+    localStorage.setItem('inertia-devtools-trigger-pos', JSON.stringify({ x: 5000, y: 5000 }))
+    const { container } = render(TriggerIcon, { ctx: ctxStub() } as never)
+    const el = trigger(container)
+
+    // jsdom's viewport is 1024x768; 36px icon → max offset 988 / 732.
+    expect(parseInt(el.style.right)).toBeLessThanOrEqual(window.innerWidth - 36)
+    expect(parseInt(el.style.bottom)).toBeLessThanOrEqual(window.innerHeight - 36)
+  })
+
+  it('re-clamps when the window shrinks', async () => {
+    localStorage.setItem('inertia-devtools-trigger-pos', JSON.stringify({ x: 900, y: 700 }))
+    const { container } = render(TriggerIcon, { ctx: ctxStub() } as never)
+    const el = trigger(container)
+
+    Object.defineProperty(window, 'innerWidth', { value: 400, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: 300, configurable: true })
+    await fireEvent(window, new Event('resize'))
+
+    expect(parseInt(el.style.right)).toBeLessThanOrEqual(400 - 36)
+    expect(parseInt(el.style.bottom)).toBeLessThanOrEqual(300 - 36)
+    // restore for other tests
+    Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: 768, configurable: true })
+  })
+})

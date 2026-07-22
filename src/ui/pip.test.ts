@@ -176,6 +176,34 @@ describe('openPipWindow', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it('fires onClose from the win.closed poll when no pagehide arrives', () => {
+    vi.useFakeTimers()
+    try {
+      const onClose = vi.fn()
+      // A window that closes WITHOUT dispatching pagehide (OS controls, mobile).
+      const win = { ...createFakeWindow(), closed: false }
+      // An opener that actually schedules timers so the backstop can run.
+      const opener = Object.assign(createEventTarget(), {
+        setInterval: globalThis.setInterval.bind(globalThis),
+        clearInterval: globalThis.clearInterval.bind(globalThis),
+      })
+      open({ onClose }, win as never, opener as never)
+
+      vi.advanceTimersByTime(600)
+      expect(onClose).not.toHaveBeenCalled() // still open
+
+      win.closed = true
+      vi.advanceTimersByTime(600)
+      expect(onClose).toHaveBeenCalledTimes(1)
+
+      // The interval is cleared — no further firings.
+      vi.advanceTimersByTime(2000)
+      expect(onClose).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('closes the popup when the opener unloads', () => {
     for (const event of ['beforeunload', 'pagehide'] as const) {
       const onClose = vi.fn()

@@ -98,9 +98,13 @@
     // While popped out, only the popup instance handles shortcuts
     if (ctx.pipOpen && !pip) return
 
-    // Escape — deselect request (back to live view)
+    // Escape — deselect request (back to live view). Scoped to focus INSIDE the
+    // devtools, the same way the arrows below are: the handler is on the
+    // document, so an Escape the user pressed to dismiss their OWN modal used to
+    // silently clear the request they were reading in the panel.
     if (e.key === 'Escape') {
       if (targetOwnsKeys(e)) return
+      if (!eventIsInsideDevtools(e)) return
       if (ctx.selectedVisitId !== null) {
         ctx.deselectRequest()
       }

@@ -2,8 +2,16 @@ import type { StoreClient } from '../core/client'
 import type { DevToolsContext } from './stores.svelte'
 import { getBaseStyles, mountSvelteApp } from './mount'
 
-/** Reusing a named window recycles a stale popup instead of stacking new ones. */
-export const PIP_WINDOW_NAME = 'inertia-devtools-pip'
+/**
+ * Unique per page load. A CONSTANT name let a SECOND tab's pop-out target and
+ * recycle THIS tab's popup — `window.open('', name)` reuses a same-name window
+ * across tabs — and the recycle wiped it with `doc.head.innerHTML = ''`, which
+ * fires no `pagehide`. So the first tab's `onClose` never ran, `pipOpen`
+ * latched `true`, and its docked panel stayed hidden with no way back. A
+ * per-tab suffix keeps the intended same-tab reuse (the name is stable within a
+ * page) while making cross-tab collision impossible.
+ */
+export const PIP_WINDOW_NAME = `inertia-devtools-pip-${Math.random().toString(36).slice(2, 10)}`
 
 const DEFAULT_WIDTH = 900
 const DEFAULT_HEIGHT = 500
@@ -87,10 +95,12 @@ export function openPipWindow(client: StoreClient, options: PipWindowOptions): P
 
   // --- Close lifecycle: onClose fires exactly once, however the popup dies ---
   let closed = false
+  let poll: ReturnType<Window['setInterval']> | undefined
 
   function notifyClose() {
     if (closed) return
     closed = true
+    if (poll !== undefined) opener.clearInterval(poll)
     opener.removeEventListener('beforeunload', closePopup)
     opener.removeEventListener('pagehide', closePopup)
     // Tear down the popup's app instance so its effects (keyboard listener,
@@ -121,6 +131,16 @@ export function openPipWindow(client: StoreClient, options: PipWindowOptions): P
   // Opener navigating away or closing takes the popup down with it
   opener.addEventListener('beforeunload', closePopup)
   opener.addEventListener('pagehide', closePopup)
+
+  // Backstop: some closes fire no pagehide at all (OS window controls on
+  // certain browsers, mobile). Without this `pipOpen` could latch true and hide
+  // the docked panel forever. Guarded so the injected test opener, which has no
+  // timer, simply skips it.
+  if (typeof opener.setInterval === 'function') {
+    poll = opener.setInterval(() => {
+      if (win?.closed) notifyClose()
+    }, 500)
+  }
 
   return {
     window: win,

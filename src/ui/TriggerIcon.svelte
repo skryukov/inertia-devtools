@@ -29,18 +29,39 @@
   let effectTimeout: ReturnType<typeof setTimeout> | null = null
   let prevEffect: StatusEffect = 'idle'
 
-  // Restore position from localStorage
+  /**
+   * Keep the trigger on screen. `pos` is a right/bottom offset, clamped at drag
+   * time — but nothing re-clamped it on load or on resize, so a position saved
+   * on a 2560px monitor put the button ~1200px off-screen when the same profile
+   * reopened on a laptop, with no way back but clearing localStorage.
+   */
+  function clampPos(p: { x: number; y: number }): { x: number; y: number } {
+    const maxX = Math.max(0, window.innerWidth - 36)
+    const maxY = Math.max(0, window.innerHeight - 36)
+    return { x: Math.min(Math.max(0, p.x), maxX), y: Math.min(Math.max(0, p.y), maxY) }
+  }
+
+  // Restore position from localStorage, clamped to the CURRENT viewport.
   {
     const saved = loadSetting('trigger-pos', '')
     if (saved) {
       try {
         const parsed = JSON.parse(saved)
-        pos = { x: parsed.x ?? 16, y: parsed.y ?? 16 }
+        pos = clampPos({ x: parsed.x ?? 16, y: parsed.y ?? 16 })
       } catch {
         /* ignore */
       }
     }
   }
+
+  // Re-clamp when the window shrinks (rotate, split-screen, smaller display).
+  $effect(() => {
+    const onResize = () => {
+      pos = clampPos(pos)
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  })
 
   // Watch latest request for status effects.
   // Read tick to ensure re-evaluation when records are mutated in place.
