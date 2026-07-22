@@ -417,7 +417,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    line-height: 1.4;
+    line-height: 1.5;
   }
 
   .protocol-label {

@@ -280,8 +280,8 @@
 
   .tree-node {
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 11.5px;
-    line-height: 1.6;
+    font-size: 11px;
+    line-height: 1.5;
   }
 
   .toggle {

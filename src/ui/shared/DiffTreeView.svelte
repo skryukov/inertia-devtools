@@ -115,8 +115,8 @@
 <style>
   .diff-tree {
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 11.5px;
-    line-height: 1.7;
+    font-size: 11px;
+    line-height: 1.5;
   }
 
   .diff-row {

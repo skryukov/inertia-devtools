@@ -678,13 +678,13 @@
   .feature-badge {
     font-size: 10px;
     font-weight: 600;
-    padding: 2px 7px;
+    padding: 2px 8px;
     border-radius: 3px;
     background: color-mix(in oklch, var(--badge-color) 16%, transparent);
     border: 1px solid color-mix(in oklch, var(--badge-color) 38%, transparent);
     color: var(--badge-color);
     text-transform: uppercase;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.05em;
     white-space: nowrap;
     font-family: inherit;
     cursor: pointer;
@@ -899,7 +899,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 10.5px;
+    font-size: 11px;
   }
 
   .size-bar-track {
