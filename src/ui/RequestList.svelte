@@ -215,6 +215,7 @@
                 <button
                   class="filter-chip"
                   class:hidden-chip={hiddenTypes.has(cat)}
+                  aria-pressed={!hiddenTypes.has(cat)}
                   onclick={() => toggleCategory(cat)}
                   title={hiddenTypes.has(cat) ? `Show ${cat}` : `Hide ${cat}`}
                 >

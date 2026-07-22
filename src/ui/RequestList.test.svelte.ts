@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
-import { render, cleanup } from '@testing-library/svelte'
+import { render, cleanup, fireEvent } from '@testing-library/svelte'
 import RequestList from './RequestList.svelte'
 import { createDevToolsContext } from './stores.svelte'
 import type { StoreClient } from '../core/client'
@@ -93,5 +93,32 @@ describe('RequestList status dot', () => {
     const ctx = createDevToolsContext(fakeClient([record({ status: 200 })]))
     const { container } = render(RequestList, { ctx } as never)
     expect(document.activeElement).not.toBe(container.querySelector('.request-list'))
+  })
+})
+
+describe('RequestList filter chips', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    resetMediaQueries()
+  })
+  afterEach(cleanup)
+
+  it('exposes toggle state via aria-pressed, flipping on click', async () => {
+    // Two categories (a GET visit + a POST mutation) make the filter chips
+    // render. RequestList chips conveyed their on/off state only visually —
+    // EventsTab/PageView already set aria-pressed, so a screen reader could not
+    // tell a RequestList chip was toggled off.
+    const ctx = createDevToolsContext(
+      fakeClient([record({ visitId: 1, method: 'GET' }), record({ visitId: 2, method: 'POST' })]),
+    )
+    const { container } = render(RequestList, { ctx } as never)
+    const chips = [...container.querySelectorAll('.filter-chip')]
+    expect(chips.length).toBeGreaterThanOrEqual(2)
+    // Nothing hidden yet — every category is shown, so every chip is pressed.
+    expect(chips.every((c) => c.getAttribute('aria-pressed') === 'true')).toBe(true)
+
+    await fireEvent.click(chips[0])
+    // The clicked category is now hidden → its chip reports not-pressed.
+    expect(container.querySelectorAll('.filter-chip')[0].getAttribute('aria-pressed')).toBe('false')
   })
 })

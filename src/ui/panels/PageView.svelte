@@ -573,6 +573,12 @@
     transform: rotate(90deg);
   }
 
+  /* Clickable disclosure — give the mouse the same feedback the other
+     controls have (it had none). */
+  .section-title:hover {
+    color: var(--dt-text);
+  }
+
   .section-heading {
     font-size: 11px;
     text-transform: uppercase;
@@ -682,6 +688,10 @@
     white-space: nowrap;
     font-family: inherit;
     cursor: pointer;
+  }
+
+  .feature-badge:hover {
+    background: color-mix(in oklch, var(--badge-color) 24%, transparent);
   }
 
   .feature-badge.expanded {

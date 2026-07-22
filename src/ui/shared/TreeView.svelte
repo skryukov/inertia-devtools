@@ -274,6 +274,10 @@
     text-decoration: underline;
   }
 
+  .show-more:hover {
+    color: var(--dt-text);
+  }
+
   .tree-node {
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
     font-size: 11.5px;
