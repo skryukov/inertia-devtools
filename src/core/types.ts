@@ -177,6 +177,13 @@ export interface SessionRequestSummary {
   completed: boolean
   cancelled: boolean
   interrupted: boolean
+  /**
+   * A request that never got a usable response — network error, or an HTTP
+   * error with no Inertia body. Absent here meant a restored 409/network-error
+   * row lost the one flag that colours it red, so it came back from a hard
+   * reload looking like a clean success.
+   */
+  failed?: boolean
   prevented?: boolean
   initial?: boolean
   only?: string[]

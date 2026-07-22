@@ -20,6 +20,24 @@ describe('isSensitiveKey', () => {
     'private_key',
     'credentials',
     'session_id',
+    'session_token',
+    'sessionKey',
+    'jwt',
+    'jwtToken',
+    'bearerToken',
+    'signature',
+    'otpCode',
+    'mfaSecret',
+    'totp',
+    'recoveryCodes',
+    'pin',
+    'stripeKey',
+    'signingKey',
+    'card_number',
+    'cardNumber',
+    'ssn',
+    'cvv',
+    'iban',
   ])('matches %s', (key) => {
     expect(isSensitiveKey(key)).toBe(true)
   })
@@ -38,6 +56,17 @@ describe('isSensitiveKey', () => {
     'Accept',
     'Content-Type',
     'session_count',
+    'monkey',
+    'donkey',
+    'whiskey',
+    'turkey',
+    'jockey',
+    'design',
+    'signal',
+    'pinned',
+    'shipping',
+    'keyboard',
+    'region',
   ])('does not match %s', (key) => {
     expect(isSensitiveKey(key)).toBe(false)
   })
@@ -247,6 +276,33 @@ describe('redactUrl', () => {
   it('returns an unparseable URL untouched rather than mangling it', () => {
     const junk = 'http://[not a url?token=x'
     expect(redactUrl(junk)).toBe(junk)
+  })
+
+  it('masks the query on a *Url-suffixed prop, not just a bare url', () => {
+    // resetUrl, callbackUrl, signedUrl are exactly what apps name these props,
+    // and the module docstring names them as the motivating case — but the
+    // exact-anchored key regex caught only `url`.
+    const out = redactExport({
+      resetUrl: 'https://app/reset?token=LEAK1',
+      callbackUrl: 'https://app/cb?access_token=LEAK2',
+      signedUrl: 'https://s3/f?X-Amz-Signature=LEAK3',
+    })
+    const json = JSON.stringify(out)
+    for (const leak of ['LEAK1', 'LEAK2', 'LEAK3']) expect(json).not.toContain(leak)
+    // parameter names stay visible
+    expect(json).toContain('token')
+    expect(json).toContain('X-Amz-Signature')
+  })
+
+  it('masks an OAuth token in the URL fragment', () => {
+    expect(redactUrl('https://app/cb#access_token=LEAK&state=ok')).not.toContain('LEAK')
+    expect(redactUrl('https://app/cb#access_token=LEAK&state=ok')).toContain('state=ok')
+  })
+
+  it('masks a password in basic-auth userinfo', () => {
+    const out = redactUrl('https://user:pa55w0rd@host/p')
+    expect(out).not.toContain('pa55w0rd')
+    expect(out).toContain('user')
   })
 
   it('reaches URLs nested anywhere in an exported record', () => {

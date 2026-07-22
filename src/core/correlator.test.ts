@@ -1255,6 +1255,47 @@ describe('Correlator', () => {
     })
   })
 
+  describe('id-less failure events (U3: the fourth resolveInFlight site)', () => {
+    it("does not let a prefetch swallow the click visit's network error", () => {
+      // Reproduces round 3's U3: a POST fails while a hover-prefetch is the
+      // newest in-flight record, and inertia:networkError carries no visit id.
+      // The other two id-less fallbacks were hardened; resolveEventRecord was not.
+      const click = makeVisitObject({ method: 'post', url: new URL('http://localhost/save') })
+      correlator.processEvent(makeEvent('inertia:before', { visit: click }, 100))
+      const prefetch = makeVisitObject({ prefetch: true, url: new URL('http://localhost/next') })
+      correlator.processEvent(makeEvent('inertia:before', { visit: prefetch }, 110))
+      correlator.processEvent(makeEvent('inertia:start', { visit: prefetch }, 111))
+
+      correlator.processEvent(makeEvent('inertia:networkError', { error: new Error('boom') }, 200))
+
+      const saveRow = correlator.getRequests().find((r) => r.url === '/save')!
+      const prefetchRow = correlator.getRequests().find((r) => r.url === '/next')!
+      expect(saveRow.failed).toBe(true)
+      expect(prefetchRow.failed).toBeUndefined()
+    })
+
+    it('a poll cannot steal an id-less failure either', () => {
+      const click = makeVisitObject({ url: new URL('http://localhost/posts') })
+      correlator.processEvent(makeEvent('inertia:before', { visit: click }, 100))
+      const poll = makeVisitObject({ poll: true, url: new URL('http://localhost/notifications') })
+      correlator.processEvent(makeEvent('inertia:before', { visit: poll }, 110))
+
+      correlator.processEvent(makeEvent('inertia:networkError', { error: new Error('boom') }, 200))
+
+      expect(correlator.getRequests().find((r) => r.url === '/posts')!.failed).toBe(true)
+      expect(correlator.getRequests().find((r) => r.url === '/notifications')!.failed).toBeUndefined()
+    })
+
+    it('still delivers a failure to a deferred group — deferred is NOT excluded', () => {
+      // deferred-failed depends on the networkError reaching the deferred record.
+      const deferred = makeVisitObject({ url: new URL('http://localhost/stats') })
+      const rec = correlator.processEvent(makeEvent('inertia:before', { visit: deferred }, 100))
+      rec!.type = 'deferred'
+      correlator.processEvent(makeEvent('inertia:networkError', { error: new Error('boom') }, 200))
+      expect(correlator.getRequests().find((r) => r.url === '/stats')!.failed).toBe(true)
+    })
+  })
+
   describe('record eviction', () => {
     it('expires cache-fresh prefetch entries by age, not only by count', () => {
       // pendingPrefetch drains on inertia:start, which a cache-FRESH prefetch

@@ -376,6 +376,35 @@ describe('computeDiagnostics', () => {
     })
   })
 
+  describe('detectRequestFailed', () => {
+    it('fires for a failed non-deferred visit — a network error with no status', () => {
+      // The exact request a developer opens the tool to see. Before this rule it
+      // surfaced with an empty diagnostics list and a green dot.
+      const diags = computeDiagnostics(makeRequest({ failed: true, status: undefined, completed: true }))
+      const diag = diags.find((d) => d.id === 'request-failed')
+      expect(diag).toBeDefined()
+      expect(diag!.severity).toBe('error')
+      expect(diag!.message).toMatch(/network error|no response/i)
+    })
+
+    it('names the status for an HTTP failure', () => {
+      const diags = computeDiagnostics(makeRequest({ failed: true, status: 500, completed: true }))
+      expect(diags.find((d) => d.id === 'request-failed')?.message).toContain('500')
+    })
+
+    it('defers to deferred-failed for a deferred group', () => {
+      const diags = computeDiagnostics(makeRequest({ failed: true, type: 'deferred', status: 500 }))
+      expect(diags.find((d) => d.id === 'deferred-failed')).toBeDefined()
+      expect(diags.find((d) => d.id === 'request-failed')).toBeUndefined()
+    })
+
+    it('stays silent for a clean request', () => {
+      expect(
+        computeDiagnostics(makeRequest({ completed: true, status: 200 })).find((d) => d.id === 'request-failed'),
+      ).toBeUndefined()
+    })
+  })
+
   describe('detectDeferredFailed', () => {
     it('detects failed deferred request', () => {
       const req = makeRequest({ type: 'deferred', failed: true, error: new Error('timeout') })

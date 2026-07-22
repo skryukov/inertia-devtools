@@ -51,6 +51,11 @@
 
     if (!latest.finishedAt) {
       setEffect('active')
+    } else if (latest.failed) {
+      // Before the prefetch/status branches: a network-failed visit has no
+      // status, so it used to pulse green. A failed prefetch is a failure, not
+      // a prefetch.
+      setEffect('error')
     } else if (latest.type === 'prefetch') {
       setEffect('prefetch')
     } else if (latest.status && latest.status >= 400) {

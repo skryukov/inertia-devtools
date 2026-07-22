@@ -70,10 +70,14 @@
       const ms = Math.round(request.finishedAt - request.startedAt)
       if (ms > 0) parts.push(ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`)
     }
-    if (request.completed) parts.push('completed')
+    // failed is checked before completed on purpose: an HTTP error is BOTH
+    // (finish runs in .finally), and reporting a request that never reached the
+    // server as "completed" is the same lie as the green dot.
+    if (request.prevented) parts.push('prevented')
     else if (request.interrupted) parts.push('interrupted')
     else if (request.cancelled) parts.push('cancelled')
-    else if (request.prevented) parts.push('prevented')
+    else if (request.failed) parts.push('failed')
+    else if (request.completed) parts.push('completed')
     else parts.push('in progress')
     return parts.join(' · ')
   })

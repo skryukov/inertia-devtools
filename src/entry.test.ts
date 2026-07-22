@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { createInertiaDevtools, destroyInertiaDevtools } from './entry'
+import { createInertiaDevtools, destroyInertiaDevtools, shouldAutoInit } from './entry'
 import { mediaQuery } from './test-setup'
 
 /**
@@ -157,5 +157,34 @@ describe('createInertiaDevtools / destroyInertiaDevtools', () => {
     createInertiaDevtools({ enabled: false })
     await settle()
     expect(hosts()).toHaveLength(0)
+  })
+})
+
+describe('shouldAutoInit (fail-closed production gate)', () => {
+  it('boots when Vite says dev (import.meta.env.DEV === true)', () => {
+    expect(shouldAutoInit(true, () => 'production')).toBe(true)
+  })
+
+  it('does NOT boot when Vite says build (DEV === false), whatever NODE_ENV says', () => {
+    expect(shouldAutoInit(false, () => 'development')).toBe(false)
+  })
+
+  it('boots for a bundled dev build with no Vite signal', () => {
+    expect(shouldAutoInit(undefined, () => 'development')).toBe(true)
+  })
+
+  it('does NOT boot for a bundled production build', () => {
+    expect(shouldAutoInit(undefined, () => 'production')).toBe(false)
+  })
+
+  it('does NOT boot when there is no signal at all — the CDN/importmap browser case', () => {
+    // The bug: unbundled page, `process` undefined, reading it throws. The old
+    // gate returned false-is-prod => auto-booted full capture onto a production
+    // page and exposed every record on window. Fail closed instead.
+    expect(
+      shouldAutoInit(undefined, () => {
+        throw new ReferenceError('process is not defined')
+      }),
+    ).toBe(false)
   })
 })

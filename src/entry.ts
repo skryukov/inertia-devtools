@@ -168,28 +168,62 @@ async function mountUI(store: DevToolsStore, options: DevToolsOptions): Promise<
 }
 
 /**
- * Auto-init must never reach production. Bundlers textually replace
- * `process.env.NODE_ENV`, so the expression must stay bare for the
- * replacement to make this branch dead code in prod builds (a `typeof
- * process` guard would survive replacement and defeat the gate in browsers).
- * Where nothing replaces it and no `process` global exists (Vite dev serves
- * this package unbundled), the ReferenceError lands in the catch and
- * boot-on-import behavior is preserved.
- * An explicit createInertiaDevtools() call is NOT gated — intentionally
- * shipping devtools (strip disabled + explicit call) stays possible.
+ * Auto-init must never reach production, and it must FAIL CLOSED — boot only
+ * when something affirmatively tells us this is a dev environment.
+ *
+ * The old gate asked `process.env.NODE_ENV === 'production'` and returned
+ * `false` (→ auto-boot) on any error. That is fail-OPEN: in a browser with no
+ * bundler substitution — Rails importmap pinned to a CDN, the project's own
+ * `docsProvider: 'inertia-rails'` audience — `process` is undefined, the access
+ * throws, the catch returns false, and full capture boots on a production page,
+ * exposing every captured record on `window.__INERTIA_DEVTOOLS_STORE__`.
+ *
+ * Now each signal must say "dev" explicitly:
+ * - `import.meta.env.DEV` — Vite statically replaces this (true in `vite dev`,
+ *   false in `vite build`), and it needs no `process`, so it is the one signal
+ *   that survives the unbundled path. This preserves boot-on-import for Vite dev.
+ * - `process.env.NODE_ENV` — textually replaced by webpack/Rollup/esbuild; a
+ *   bundled non-Vite dev build reads 'development' here.
+ * - neither present → unbundled and unidentifiable → do NOT boot.
+ *
+ * An explicit createInertiaDevtools() call is NOT gated — intentionally shipping
+ * devtools (strip disabled + explicit call) stays possible.
  */
-const isProdBuild = (() => {
+/**
+ * Fail-CLOSED auto-init decision, pure so it can actually be tested (the old
+ * inline IIFE could not — see entry.test.ts). Boot only when a signal says
+ * "dev" outright:
+ * - `importMetaDev` is `import.meta.env.DEV`, which Vite statically replaces and
+ *   which needs no `process`, so it survives the unbundled path.
+ * - otherwise `readNodeEnv()` reads the bundler-replaced NODE_ENV.
+ * - if reading it throws — unbundled browser, no `process` — return false. The
+ *   old code returned TRUE here, which auto-booted full capture onto any CDN /
+ *   importmap production page.
+ */
+export function shouldAutoInit(importMetaDev: unknown, readNodeEnv: () => string | undefined): boolean {
+  if (typeof importMetaDev === 'boolean') return importMetaDev
   try {
-    return process.env.NODE_ENV === 'production'
+    return readNodeEnv() !== 'production'
   } catch {
     return false
   }
+}
+
+const importMetaDev = (() => {
+  try {
+    const meta = import.meta as unknown as { env?: { DEV?: unknown } }
+    return meta.env?.DEV
+  } catch {
+    return undefined
+  }
 })()
 
-// Auto-init on side-effect import: `import 'inertia-devtools'`
+// Auto-init on side-effect import: `import 'inertia-devtools'`.
 // Runs immediately if no explicit createInertiaDevtools() call is made.
 // Uses a microtask to allow createInertiaDevtools() to be called first.
-if (typeof window !== 'undefined' && !isProdBuild) {
+// `process.env.NODE_ENV` is read inside the arrow so it stays a bare, textually
+// replaceable token for webpack/Rollup/esbuild.
+if (typeof window !== 'undefined' && shouldAutoInit(importMetaDev, () => process.env.NODE_ENV)) {
   queueMicrotask(() => {
     if (!initialized) {
       init(defaultOptions)

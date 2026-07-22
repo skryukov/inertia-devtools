@@ -24,6 +24,7 @@ const rules: DiagnosticRule[] = [
   detectStaleErrors,
   detectDiscardedResponse,
   detectDeferredFailed,
+  detectRequestFailed,
   detectHistoryReplace,
 ]
 
@@ -277,6 +278,21 @@ function detectDeferredFailed(req: RequestRecord): Diagnostic | null {
     return { id: 'deferred-failed', severity: 'error', message: 'Deferred props failed to load' }
   }
   return null
+}
+
+/**
+ * Any other failed visit — a network error, or an HTTP error with no Inertia
+ * body. `deferred-failed` covers the deferred case with a more specific
+ * message; without this rule every non-deferred failure surfaced as an empty
+ * diagnostics list, so the row that most needs an explanation had none.
+ */
+function detectRequestFailed(req: RequestRecord): Diagnostic | null {
+  if (!req.failed || req.type === 'deferred') return null
+  const message =
+    req.status && req.status >= 400
+      ? `Request failed — HTTP ${req.status}`
+      : 'Request failed — no response reached the client (network error or blocked request)'
+  return { id: 'request-failed', severity: 'error', message }
 }
 
 function detectHistoryReplace(req: RequestRecord): Diagnostic | null {

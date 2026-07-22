@@ -5,6 +5,11 @@ function makeCustomEvent(name: string, detail: unknown = {}): CustomEvent {
   return new CustomEvent(name, { detail })
 }
 
+let visitSeq = 0
+function makeVisit(over: Record<string, unknown> = {}) {
+  return { id: `v-${++visitSeq}`, method: 'get', url: new URL('http://localhost/x'), completed: false, ...over }
+}
+
 describe('DevToolsStore', () => {
   let store: DevToolsStore
 
@@ -450,6 +455,27 @@ describe('DevToolsStore', () => {
       sessionStorage.clear()
       store.flushPendingSave()
       expect(sessionStorage.getItem('inertia-devtools-session')).toBeNull()
+    })
+  })
+
+  describe('real capture path (U3 through captureEvent, not processEvent)', () => {
+    // Round 3 B14: 312 correlator tests call processEvent directly and ZERO go
+    // through captureEvent — so they exercise a branch production never takes
+    // (already-stringified detail, no safeSerializeDetail). This routes the U3
+    // scenario through the true entry point, so the misattribution fix is
+    // verified on the path that actually ships.
+    it('a network error lands on the click visit, not the in-flight prefetch', () => {
+      const click = makeVisit({ method: 'post', url: new URL('http://localhost/save') })
+      store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: click }))
+      const prefetch = makeVisit({ prefetch: true, url: new URL('http://localhost/next') })
+      store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit: prefetch }))
+      store.captureEvent('inertia:start', makeCustomEvent('inertia:start', { visit: prefetch }))
+
+      store.captureEvent('inertia:networkError', makeCustomEvent('inertia:networkError', { error: new Error('boom') }))
+
+      const rows = store.getState().requests
+      expect(rows.find((r) => r.url === '/save')!.failed).toBe(true)
+      expect(rows.find((r) => r.url === '/next')!.failed).toBeUndefined()
     })
   })
 })

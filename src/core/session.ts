@@ -1,5 +1,6 @@
 import type { RequestRecord, SessionSnapshot, SessionRequestSummary } from './types'
 import { isNonEmptyRecord } from './utils'
+import { redactUrl } from './redact'
 
 const SESSION_KEY = 'inertia-devtools-session'
 const MAX_AGE_MS = 5 * 60 * 1000 // 5 minutes
@@ -11,7 +12,11 @@ export function summarizeRequest(req: RequestRecord): SessionRequestSummary {
     parentVisitId: req.parentVisitId,
     type: req.type,
     method: req.method,
-    url: req.url,
+    // Redacted like every other outbound URL: this lands in sessionStorage for
+    // 5 minutes, readable by any same-origin script, and a password-reset visit
+    // carries its `?token=` right here. Every other export path masks these;
+    // the session summary was the one that copied them raw.
+    url: redactUrl(req.url),
     status: req.status,
     startedAt: req.startedAt,
     finishedAt: req.finishedAt,
@@ -19,11 +24,12 @@ export function summarizeRequest(req: RequestRecord): SessionRequestSummary {
     completed: req.completed,
     cancelled: req.cancelled,
     interrupted: req.interrupted,
+    failed: req.failed,
     prevented: req.prevented,
     initial: req.initial,
     only: req.only,
     except: req.except,
-    redirectUrl: req.redirectUrl,
+    redirectUrl: req.redirectUrl ? redactUrl(req.redirectUrl) : req.redirectUrl,
     component: req.page?.component,
     featureTypes: req.features.map((f) => f.type),
     hasErrors: isNonEmptyRecord(req.page?.props?.errors),

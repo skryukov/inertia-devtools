@@ -16,14 +16,29 @@
 
 export const REDACTED = '[REDACTED]'
 
+/**
+ * Substring signals for a sensitive key, case-insensitive. `authorization` is
+ * spelled out rather than `auth` so an ordinary `author` prop survives; `otp`,
+ * `mfa`, `totp` are anchored with `\b…` prefixes so they still catch `otpCode`
+ * / `mfaSecret` without matching a word that merely contains them.
+ */
 const SENSITIVE_KEY =
-  /password|passwd|pwd|secret|token|authorization|cookie|csrf|xsrf|api[-_]?key|access[-_]?key|private[-_]?key|credential|session[-_]?id/i
+  /password|passwd|pwd|secret|token|authorization|cookie|csrf|xsrf|api[-_]?key|access[-_]?key|private[-_]?key|credential|session[-_]?(id|key|token|secret)|\bjwt\b|bearer|signature|\botp|\bmfa|\btotp|2fa|recovery|\bpin\b|\bssn\b|\bcvv\b|\bcvc\b|card[-_]?number|\biban\b|[-_]key$/i
+
+/**
+ * Case-SENSITIVE camelCase secret suffixes: `stripeKey`, `signingKey`,
+ * `sessionToken`. Kept separate because under the `/i` flag `[a-z]Key$` also
+ * matches the tail of `monkey`, `donkey`, `whiskey` — the classic
+ * over-redaction. Requiring a lowercase letter before an uppercase `Key`
+ * distinguishes a camelCase boundary from an ordinary word.
+ */
+const SENSITIVE_KEY_CAMEL = /[a-z](Key|Sig|Token|Secret|Pwd|Password)$/
 
 /** Recursion limit — deep prop trees are the norm, cycles are not. */
 const MAX_DEPTH = 8
 
 export function isSensitiveKey(key: string): boolean {
-  return SENSITIVE_KEY.test(key)
+  return SENSITIVE_KEY.test(key) || SENSITIVE_KEY_CAMEL.test(key)
 }
 
 /**
@@ -79,37 +94,70 @@ export function redactExport<T>(value: T): T {
   return walkForExport(value, new WeakSet()) as T
 }
 
-/** Keys whose string values are URLs, so their query strings get masked too. */
-const URL_KEY = /^(url|redirectUrl|href|location)$/
+/**
+ * Keys whose string values are URLs, so their query strings get masked too.
+ *
+ * NOT anchored `^…$`: an app calls its reset link `resetUrl`, its magic link
+ * `callbackUrl`, its signed download `signedUrl` — the exact motivating cases —
+ * and the exact-match version caught only a bare `url`. `(^|[a-z])` accepts a
+ * camelCase/prefixed suffix while still rejecting an unrelated word; the `i`
+ * flag catches `Url`/`URL`.
+ */
+const URL_KEY = /(^|[a-z])(url|uri|href|location)$/i
 
 /**
- * Mask sensitive query parameters, keeping the parameter NAMES visible.
+ * Mask credentials carried IN a URL — query string, fragment, and basic-auth
+ * userinfo — keeping structure visible.
  *
  * Password-reset links, magic-link callbacks and signed S3 URLs put the
- * credential in the query string, and a URL is the one field every export path
- * emits — `record.url`, `wire.request.url`, `redirectUrl`. Seeing that a
- * `?token=` was present is the debuggable part; its value is not.
+ * credential in the query; the OAuth implicit flow puts the access token in the
+ * fragment (`#access_token=`); and `https://user:pass@host` puts a password in
+ * the authority. A URL is the one field every export path emits — `record.url`,
+ * `wire.request.url`, `redirectUrl` — so all three had to be covered. Seeing
+ * that a `?token=` was present is the debuggable part; its value is not.
  *
  * Relative URLs are the norm here, so parsing goes through a dummy base and the
- * origin is stripped back off. Anything unparseable is returned untouched
- * rather than mangled — this must never turn a URL into noise.
+ * origin is stripped back off when the input had none. Anything unparseable, or
+ * with nothing to mask, is returned BYTE-IDENTICAL — round-tripping through URL
+ * reorders and re-encodes, so an untouched URL must never go through it.
  */
 export function redactUrl(url: string): string {
-  const queryStart = url.indexOf('?')
-  if (queryStart === -1) return url
+  // Nothing that could carry a secret in any of the three positions.
+  if (!url.includes('?') && !url.includes('#') && !url.includes('@')) return url
   try {
     const base = 'http://redact.invalid'
     const parsed = new URL(url, base)
-    // Collected before mutating: `set()` rewrites the same collection `keys()`
-    // is walking.
-    const sensitive: string[] = []
-    for (const key of parsed.searchParams.keys()) {
-      if (isSensitiveKey(key)) sensitive.push(key)
+    let touched = false
+
+    // Basic-auth userinfo: https://user:pa55w0rd@host
+    if (parsed.password) {
+      parsed.password = REDACTED
+      touched = true
     }
-    if (sensitive.length === 0) return url
-    for (const key of sensitive) parsed.searchParams.set(key, REDACTED)
+
+    // Query string. Collected before mutating: set() rewrites the same
+    // collection keys() is walking.
+    const queryKeys = [...parsed.searchParams.keys()].filter(isSensitiveKey)
+    for (const key of queryKeys) {
+      parsed.searchParams.set(key, REDACTED)
+      touched = true
+    }
+
+    // Fragment: #access_token=… (OAuth implicit flow) is itself a query string.
+    if (parsed.hash.length > 1) {
+      const frag = new URLSearchParams(parsed.hash.slice(1))
+      const fragKeys = [...frag.keys()].filter(isSensitiveKey)
+      if (fragKeys.length > 0) {
+        for (const key of fragKeys) frag.set(key, REDACTED)
+        parsed.hash = `#${frag.toString()}`
+        touched = true
+      }
+    }
+
+    if (!touched) return url
+    const hadOrigin = /^[a-z][a-z0-9+.-]*:\/\//i.test(url)
     const rebuilt = parsed.toString()
-    return url.startsWith(parsed.origin) ? rebuilt : rebuilt.slice(parsed.origin.length)
+    return hadOrigin ? rebuilt : rebuilt.slice(parsed.origin.length)
   } catch {
     return url
   }

@@ -32,6 +32,25 @@ function makeRequest(overrides: Partial<RequestRecord> = {}): RequestRecord {
 }
 
 describe('summarizeRequest', () => {
+  it('carries the failed flag so a restored row still colours red', () => {
+    // Without this the flag was dropped from the summary, so a 409 or
+    // network-error record came back from the hard reload it caused looking
+    // like a clean success.
+    expect(summarizeRequest(makeRequest({ failed: true }) as never).failed).toBe(true)
+  })
+
+  it('redacts credentials in persisted URLs', () => {
+    // sessionStorage is readable by any same-origin script for 5 minutes; a
+    // password-reset visit carries its ?token= right here.
+    const summary = summarizeRequest(
+      makeRequest({ url: '/reset?token=SECRET', redirectUrl: '/cb?access_key=SECRET2' }) as never,
+    )
+    expect(summary.url).not.toContain('SECRET')
+    expect(summary.redirectUrl).not.toContain('SECRET2')
+    // path is preserved
+    expect(summary.url).toContain('/reset')
+  })
+
   it('extracts correct fields from a full RequestRecord', () => {
     const req = makeRequest({
       visitId: 42,

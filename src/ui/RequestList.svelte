@@ -11,6 +11,11 @@
   type RequestLike = RequestRecord | SessionRequestSummary
 
   function statusColor(req: RequestLike): string {
+    // First branch, before the in-flight check: a network-failed visit still
+    // has finishedAt set (finish() runs in a .finally()) but no status, so
+    // without this it fell all the way through to green — the exact request the
+    // developer opened the tool to see, painted as the healthy case.
+    if (req.failed) return 'var(--dt-red)'
     if (!req.finishedAt) return 'var(--dt-accent)'
     if ((req.status ?? 0) >= 400) return 'var(--dt-red)'
     if (req.cancelled || req.interrupted || req.prevented) return 'var(--dt-text-muted)'

@@ -743,12 +743,24 @@ export class Correlator {
     // event to an unrelated record (e.g. after eviction) would be misattribution.
     if (uuid) return this.resolveByUuid(uuid)
 
+    // Same exclusions the beforeUpdate and navigate fallbacks already carry, and
+    // the site the "correlator misattribution" pass MISSED. Inertia sends
+    // progress, httpException, networkError and location with no visit id, so a
+    // prefetch or poll in flight — the newest record — used to collect the
+    // user's real visit's failure: the prefetch row went red with the 500 while
+    // the visit that actually failed looked clean, and 1000 upload-progress
+    // ticks all landed on the prefetch.
+    //
+    // Deferred is NOT excluded: a deferred group genuinely can fail, and its
+    // networkError/httpException must reach it for `deferred-failed` to fire.
+    const inFlight = this.resolveInFlight({ excludePrefetch: true, excludePoll: true })
+
     // flash can fire with no visit in flight at all (router.flash()) — fall back
     // to the most recent record so the flash is still visible somewhere sensible.
     const record =
       event.name === 'inertia:flash'
-        ? (this.resolveInFlight() ?? this.sortedRecords[this.sortedRecords.length - 1] ?? null)
-        : this.resolveInFlight()
+        ? (inFlight ?? this.sortedRecords[this.sortedRecords.length - 1] ?? null)
+        : inFlight
     if (record) event.heuristic = true
     return record
   }
