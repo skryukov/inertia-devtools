@@ -310,7 +310,7 @@
   }
 
   .mode-btn.active {
-    background: var(--dt-accent);
+    background: var(--dt-accent-surface);
     color: white;
   }
 

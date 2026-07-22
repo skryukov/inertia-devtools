@@ -494,8 +494,8 @@
   }
 
   .filter-chip.active {
-    background: var(--dt-accent);
-    border-color: var(--dt-accent);
+    background: var(--dt-accent-surface);
+    border-color: var(--dt-accent-surface);
     color: white;
   }
 

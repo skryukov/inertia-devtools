@@ -409,7 +409,7 @@
               <div class="size-row">
                 <span class="size-key">{key}</span>
                 <div class="size-bar-track">
-                  <div class="size-bar-fill" style:width="{pct}%"></div>
+                  <div class="size-bar-fill" style:transform="scaleX({pct / 100})"></div>
                 </div>
                 <span class="size-value">{formatBytes(size)}</span>
               </div>
@@ -766,7 +766,7 @@
   }
 
   .toggle-btn.active {
-    background: var(--dt-accent);
+    background: var(--dt-accent-surface);
     color: white;
   }
 
@@ -903,10 +903,14 @@
 
   .size-bar-fill {
     height: 100%;
+    width: 100%;
     background: var(--dt-accent);
     border-radius: 2px;
-    min-width: 1px;
-    transition: width 0.2s;
+    /* scaleX (composited) rather than animating width, which triggers layout
+       on every data change. transform-origin keeps the fill growing from the
+       left edge, matching the old width-based bar. */
+    transform-origin: left;
+    transition: transform 0.2s;
   }
 
   .size-value {

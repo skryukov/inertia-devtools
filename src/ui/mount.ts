@@ -96,14 +96,31 @@ export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
       --dt-text: oklch(0.985 0 0);
       --dt-text-muted: oklch(0.716 0.013 286);
 
-      /* Accent — Inertia brand #2563EB */
-      --dt-accent: oklch(0.546 0.215 264);
+      /*
+       * Accent — Inertia brand #2563EB, lifted from L=0.546 to L=0.670. The
+       * brand hex is only 2.87:1 on --dt-bg-card, failing AA text (4.5:1) AND
+       * the 3:1 non-text bar — so it was invalid even as the focus-ring colour
+       * on card surfaces. L=0.670 clears 4.57:1 on card / 4.9:1 on bg.
+       *
+       * This bright shade is for accent used AS text/lines (links, labels,
+       * focus ring, data bars). Filled controls that carry WHITE label text
+       * need the opposite — white on L=0.670 is only 3.13:1 — so they use
+       * --dt-accent-surface below (L=0.546, white-on-it = 5.18:1). One token
+       * cannot do both on a dark surface: legible-as-text wants bright, legible
+       * -under-white wants dark, and those L ranges do not overlap.
+       */
+      --dt-accent: oklch(0.67 0.19 264);
+      --dt-accent-surface: oklch(0.546 0.215 264);
 
-      /* Semantic colors */
+      /*
+       * Semantic colors. red/blue/purple lifted so value text (tree keys,
+       * numbers, error labels) clears AA 4.5:1 on --dt-bg-card, not just on the
+       * darker --dt-bg. green/cyan/amber/etc already clear it here in dark.
+       */
       --dt-green: oklch(0.723 0.191 149);
-      --dt-red: oklch(0.627 0.222 25);
-      --dt-blue: oklch(0.623 0.185 259);
-      --dt-purple: oklch(0.627 0.225 303);
+      --dt-red: oklch(0.69 0.2 25);
+      --dt-blue: oklch(0.655 0.17 259);
+      --dt-purple: oklch(0.68 0.21 303);
       --dt-amber: oklch(0.769 0.171 70);
       --dt-cyan: oklch(0.715 0.127 207);
       --dt-teal: oklch(0.704 0.119 182);
@@ -143,27 +160,35 @@ export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
       --dt-bg-card: oklch(0.967 0.003 286);
       --dt-border: oklch(0.92 0.004 286);
       --dt-text: oklch(0.205 0.006 286);
-      --dt-text-muted: oklch(0.552 0.016 286);
+      /* L=0.542, not 0.552: at 0.552 muted measured 4.39:1 on the lighter
+       * --dt-bg-card, under AA. 0.542 clears 4.57:1 on card / 5.04:1 on bg. */
+      --dt-text-muted: oklch(0.542 0.016 286);
 
       --dt-accent: oklch(0.488 0.217 264);
+      /* Light surfaces are light, so the L=0.488 accent already clears both
+       * white-on-it (6.7:1) and accent-as-text on card (6.1:1) — no split
+       * needed; surface == accent here, kept only for token parity. */
+      --dt-accent-surface: oklch(0.488 0.217 264);
 
-      --dt-green: oklch(0.56 0.175 149);
+      /* green/amber/cyan lowered in L so value text clears AA 4.5:1 on the
+       * lighter --dt-bg-card (darker = more contrast on a light surface). */
+      --dt-green: oklch(0.515 0.175 149);
       --dt-red: oklch(0.535 0.22 25);
       --dt-blue: oklch(0.488 0.217 264);
       --dt-purple: oklch(0.494 0.23 303);
-      --dt-amber: oklch(0.606 0.165 70);
-      --dt-cyan: oklch(0.547 0.12 207);
-      --dt-teal: oklch(0.536 0.112 182);
-      --dt-emerald: oklch(0.528 0.155 162);
+      --dt-amber: oklch(0.545 0.165 70);
+      --dt-cyan: oklch(0.515 0.12 207);
+      --dt-teal: oklch(0.52 0.112 182);
+      --dt-emerald: oklch(0.51 0.155 162);
       --dt-yellow: oklch(0.636 0.165 86);
 
       /*
        * Equal to --dt-text-muted on purpose. In a light theme "dimmer" means
-       * lighter, which lowers contrast — and muted is already only 4.83:1 on
-       * white, so there is no headroom to spend. Dimming it further would buy
-       * a visual nuance by dropping explanatory text below AA.
+       * lighter, which lowers contrast, and there is no headroom to spend below
+       * AA — so dim matches muted rather than going lighter. Tracks muted's
+       * L=0.542 so it clears AA on --dt-bg-card too (4.57:1), not just on bg.
        */
-      --dt-text-dim: oklch(0.552 0.016 286);
+      --dt-text-dim: oklch(0.542 0.016 286);
 
       --dt-overlay: 0 0 0; /* black in light mode */
       --dt-hover: oklch(var(--dt-overlay) / 0.04);

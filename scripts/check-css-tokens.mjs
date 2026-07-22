@@ -20,7 +20,9 @@ function walk(dir) {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry)
     if (statSync(full).isDirectory()) out.push(...walk(full))
-    else if (/\.(svelte|ts)$/.test(entry)) out.push(full)
+    // Test files never ship CSS; a --dt- token in a test string or JSDoc is not
+    // a real definition or reference, so scanning them only produces phantoms.
+    else if (/\.(svelte|ts)$/.test(entry) && !/\.test\.(svelte\.)?ts$/.test(entry)) out.push(full)
   }
   return out
 }
