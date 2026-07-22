@@ -120,11 +120,98 @@
     if (typeof val === 'boolean') return 'boolean'
     return ''
   }
+
+  /**
+   * WAI-ARIA tree keyboard handling, on the ROOT node only (depth 0). The tree
+   * used to be a wall of bare <button>s: expanding a 500-item array created 502
+   * Tab stops, expansion was conveyed only by a ▸/▾ glyph, and a screen reader
+   * saw a flat list of buttons, not a tree. Now each node is a `treeitem` with
+   * `aria-level`/`aria-expanded`, the items are tabindex=-1 (one Tab stop for
+   * the whole tree), and arrows move focus / expand-collapse.
+   *
+   * Flat `aria-level` rather than nested `group`s: it conveys the same hierarchy
+   * without restructuring the DOM, so the existing indentation and render budget
+   * are untouched. Focus is resolved through `getRootNode()` so it works inside
+   * the shadow root, where `document.activeElement` only sees the host.
+   */
+  let rootEl = $state<HTMLElement | undefined>()
+
+  function treeItems(): HTMLElement[] {
+    if (!rootEl) return []
+    return [...rootEl.querySelectorAll<HTMLElement>('[role="treeitem"]')]
+  }
+
+  function focusAt(items: HTMLElement[], index: number) {
+    const clamped = Math.max(0, Math.min(items.length - 1, index))
+    items[clamped]?.focus()
+  }
+
+  function onTreeKeydown(e: KeyboardEvent) {
+    const items = treeItems()
+    if (items.length === 0) return
+    const root = rootEl?.getRootNode() as Document | ShadowRoot | undefined
+    const active = (root?.activeElement ?? null) as HTMLElement | null
+    const idx = active ? items.indexOf(active) : -1
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault()
+        focusAt(items, idx + 1)
+        break
+      case 'ArrowUp':
+        e.preventDefault()
+        focusAt(items, idx - 1)
+        break
+      case 'Home':
+        e.preventDefault()
+        focusAt(items, 0)
+        break
+      case 'End':
+        e.preventDefault()
+        focusAt(items, items.length - 1)
+        break
+      case 'ArrowRight':
+        e.preventDefault()
+        // Collapsed → expand in place; already-expanded/leaf → step into it.
+        if (items[idx]?.getAttribute('aria-expanded') === 'false') items[idx].click()
+        else if (idx >= 0) focusAt(items, idx + 1)
+        break
+      case 'ArrowLeft':
+        e.preventDefault()
+        // Expanded → collapse; leaf/collapsed → step back out.
+        if (items[idx]?.getAttribute('aria-expanded') === 'true') items[idx].click()
+        else if (idx > 0) focusAt(items, idx - 1)
+        break
+    }
+  }
 </script>
 
-<div class="tree-node" style:padding-left="{depth * 14}px">
+<!-- role="tree" and the keyboard handler live on the ROOT node only; deeper
+     nodes are generic wrappers and convey their depth through aria-level.
+     svelte-ignore a11y_no_noninteractive_tabindex: a tree container is an
+     interactive composite widget and legitimately takes focus (WAI-ARIA tree
+     pattern); the rule does not recognise role="tree" as interactive. -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div
+  class="tree-node"
+  style:padding-left="{depth * 14}px"
+  role={depth === 0 ? 'tree' : undefined}
+  tabindex={depth === 0 ? 0 : undefined}
+  aria-label={depth === 0 ? 'Property tree' : undefined}
+  onkeydown={depth === 0 ? onTreeKeydown : undefined}
+  bind:this={rootEl}
+>
   {#if isExpandable}
-    <button class="toggle" class:match={isMatch} onclick={() => (open = !isOpen)}>
+    <button
+      class="toggle"
+      class:match={isMatch}
+      role="treeitem"
+      aria-level={depth + 1}
+      aria-expanded={isOpen}
+      aria-selected={false}
+      tabindex="-1"
+      onclick={() => (open = !isOpen)}
+    >
       <span class="arrow" class:open={isOpen}>{isOpen ? '\u25BE' : '\u25B8'}</span>
       {#if label}<span class="key">{label}:</span>{/if}
       <span class="preview {typeClass(data)}">{preview}</span>
@@ -158,7 +245,7 @@
       {/if}
     {/if}
   {:else}
-    <span class="leaf" class:match={isMatch}>
+    <span class="leaf" class:match={isMatch} role="treeitem" aria-level={depth + 1} aria-selected={false} tabindex="-1">
       {#if label}<span class="key">{label}:</span>{/if}
       <span class={typeClass(data)}>{preview}</span>
     </span>

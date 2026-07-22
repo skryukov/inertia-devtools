@@ -97,3 +97,73 @@ describe('TreeView', () => {
     expect(screen.queryByText('"deep-value"')).toBeNull()
   })
 })
+
+describe('TreeView ARIA tree pattern (B7a)', () => {
+  afterEach(cleanup)
+
+  it('exposes a tree with treeitems carrying level and expansion', () => {
+    const { container } = render(TreeView, { data: { users: { a: 1 }, name: 'x' }, defaultOpen: true })
+    expect(container.querySelector('[role="tree"]')).toBeTruthy()
+    const items = container.querySelectorAll('[role="treeitem"]')
+    expect(items.length).toBeGreaterThan(0)
+    // An expandable node reports aria-expanded; a leaf reports its level.
+    const expandable = [...items].find((el) => el.getAttribute('aria-expanded') !== null)
+    expect(expandable).toBeTruthy()
+    expect(items[0].getAttribute('aria-level')).toBe('1')
+  })
+
+  it('is ONE tab stop, not 502 — items are tabindex=-1', () => {
+    // The headline defect: every toggle used to be a bare <button>, so expanding
+    // a big collection created a tab stop per row.
+    const data = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, i]))
+    const { container } = render(TreeView, { data, defaultOpen: true })
+    const tabbable = container.querySelectorAll('[role="tree"][tabindex="0"]')
+    expect(tabbable.length).toBe(1)
+    const items = container.querySelectorAll('[role="treeitem"]')
+    expect([...items].every((el) => el.getAttribute('tabindex') === '-1')).toBe(true)
+  })
+
+  it('ArrowDown/Up move focus between visible treeitems', async () => {
+    const { container } = render(TreeView, { data: { a: 1, b: 2, c: 3 }, defaultOpen: true })
+    const tree = container.querySelector('[role="tree"]') as HTMLElement
+    const items = [...container.querySelectorAll<HTMLElement>('[role="treeitem"]')]
+
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(items[0])
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(items[1])
+    await fireEvent.keyDown(tree, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(items[0])
+  })
+
+  it('ArrowRight expands a collapsed node, ArrowLeft collapses it', async () => {
+    const { container } = render(TreeView, { data: { outer: { inner: 'deep' } }, defaultOpen: true })
+    const tree = container.querySelector('[role="tree"]') as HTMLElement
+    // The "outer" child treeitem (depth 1, starts collapsed) — matched by its
+    // key label, not preview text, so the root node (whose preview also contains
+    // "outer") is not picked by mistake.
+    const outer = [...container.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((el) =>
+      [...el.querySelectorAll('.key')].some((k) => k.textContent === 'outer:'),
+    )!
+    outer.focus()
+    expect(outer.getAttribute('aria-expanded')).toBe('false')
+
+    await fireEvent.keyDown(tree, { key: 'ArrowRight' })
+    expect(outer.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('"deep"')).toBeTruthy()
+
+    await fireEvent.keyDown(tree, { key: 'ArrowLeft' })
+    expect(outer.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('Home/End jump to the first and last visible treeitem', async () => {
+    const { container } = render(TreeView, { data: { a: 1, b: 2, c: 3 }, defaultOpen: true })
+    const tree = container.querySelector('[role="tree"]') as HTMLElement
+    const items = [...container.querySelectorAll<HTMLElement>('[role="treeitem"]')]
+
+    await fireEvent.keyDown(tree, { key: 'End' })
+    expect(document.activeElement).toBe(items[items.length - 1])
+    await fireEvent.keyDown(tree, { key: 'Home' })
+    expect(document.activeElement).toBe(items[0])
+  })
+})
