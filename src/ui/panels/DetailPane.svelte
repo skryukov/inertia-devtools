@@ -14,6 +14,8 @@
   let showRaw = $state(false)
   let toast = $state<string | null>(null)
   let toastTimeout: ReturnType<typeof setTimeout> | undefined
+  let replaying = $state(false)
+  let replayTimeout: ReturnType<typeof setTimeout> | undefined
 
   // Each tab copies its own view of the request as markdown
   const copySource = $derived.by(() => {
@@ -36,9 +38,21 @@
   })
 
   function handleReplay() {
-    if (!ctx.selectedRequest || !canReplay) return
+    // `replaying` guards a double-submit: replaying a GET re-issues a real
+    // request against the host app, so a rapid second click would fire it
+    // twice. The button also disables for this window, but guard here too so a
+    // programmatic/keyboard repeat cannot slip past the visual state.
+    if (!ctx.selectedRequest || !canReplay || replaying) return
+    replaying = true
     ctx.replayVisit(ctx.selectedRequest.visitId)
     showToast('Replaying...')
+    // Brief cooldown — long enough to cover an accidental second click and a
+    // fast round-trip. There is no completion signal to key off, so this is a
+    // time-based guard, not a precise in-flight tracker.
+    clearTimeout(replayTimeout)
+    replayTimeout = setTimeout(() => {
+      replaying = false
+    }, 1500)
   }
 
   async function handleCopy() {
@@ -121,7 +135,12 @@
           </div>
         {/if}
         {#if ctx.canAct}
-          <button class="copy-btn" onclick={handleReplay} disabled={!canReplay} title={replayTitle}>
+          <button
+            class="copy-btn"
+            onclick={handleReplay}
+            disabled={!canReplay || replaying}
+            title={replayTitle}
+          >
             <svg
               width="12"
               height="12"
@@ -132,7 +151,7 @@
               stroke-linecap="round"
               stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3" /></svg
             >
-            Replay
+            {replaying ? 'Replaying…' : 'Replay'}
           </button>
         {/if}
         <button class="copy-btn" onclick={handleCopy} title={copySource.title}>
