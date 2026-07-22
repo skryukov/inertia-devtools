@@ -202,7 +202,7 @@
       {/if}
     </div>
     <div class="header-right">
-      <button class="header-btn" onclick={() => ctx.clearAll()} title="Clear all">
+      <button class="header-btn" onclick={() => ctx.clearAll()} title="Clear all" aria-label="Clear all requests">
         <svg
           width="14"
           height="14"
@@ -213,7 +213,12 @@
           stroke-linecap="round">{@html ICON_CLEAR}</svg
         >
       </button>
-      <button class="header-btn" onclick={() => ctx.cycleTheme()} title="Theme: {ctx.theme}">
+      <button
+        class="header-btn"
+        onclick={() => ctx.cycleTheme()}
+        title="Theme: {ctx.theme}"
+        aria-label="Theme: {ctx.theme}. Click to cycle."
+      >
         {#if ctx.theme === 'system'}
           <svg
             width="14"
@@ -250,7 +255,12 @@
         {/if}
       </button>
       {#if !pip}
-        <button class="header-btn" onclick={() => ctx.openPip()} title="Open in separate window">
+        <button
+          class="header-btn"
+          onclick={() => ctx.openPip()}
+          title="Open in separate window"
+          aria-label="Open devtools in a separate window"
+        >
           <svg
             width="14"
             height="14"
@@ -267,6 +277,7 @@
         class="header-btn"
         onclick={() => (pip ? ctx.closePip() : ctx.togglePanel())}
         title={pip ? 'Close window' : 'Close panel'}
+        aria-label={pip ? 'Close window' : 'Close panel'}
       >
         <svg
           width="14"

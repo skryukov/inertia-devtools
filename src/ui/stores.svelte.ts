@@ -60,6 +60,22 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
     tick++
   })
 
+  /**
+   * Raised when the panel is opened by a user action, consumed by the request
+   * list to move focus INTO the panel. Without it the panel opened but focus
+   * stayed in the host app, so the arrow-key browsing the README advertises was
+   * unreachable without a mouse — `DevToolsApp` deliberately ignores arrows
+   * unless focus is inside the devtools. Set only on a deliberate open, never on
+   * the persisted-open restore at load, so it can't steal focus from the host
+   * app on every page view.
+   */
+  let panelFocusRequested = $state(false)
+  function consumePanelFocusRequest(): boolean {
+    if (!panelFocusRequested) return false
+    panelFocusRequested = false
+    return true
+  }
+
   function togglePanel() {
     // While popped out the trigger focuses the popup instead of toggling
     if (pipOpen) {
@@ -68,6 +84,7 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
     }
     panelOpen = !panelOpen
     client.setPanelOpen(panelOpen)
+    if (panelOpen) panelFocusRequested = true
 
     saveSetting('panel', panelOpen ? 'open' : 'closed')
   }
@@ -299,6 +316,7 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
     selectNextRequest,
     selectPrevRequest,
     setVisibleRequestIds,
+    consumePanelFocusRequest,
     deselectRequest,
     setActiveTab,
     clearAll,

@@ -205,6 +205,18 @@ export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
       box-sizing: border-box;
     }
 
+    /*
+     * Keyboard focus was invisible: nothing in the UI defined :focus-visible and
+     * the two search inputs actively removed the UA ring. A keyboard user had no
+     * idea where focus sat. One accent ring for everything focusable, keyed off
+     * :focus-visible so a mouse click never draws one. 2px meets the 3:1
+     * non-text contrast bar even where --dt-accent is dim as body text.
+     */
+    :focus-visible {
+      outline: 2px solid var(--dt-accent);
+      outline-offset: 1px;
+    }
+
     /* Thin scrollbars — standard property (Firefox, Chrome 121+) */
     * {
       scrollbar-width: thin;

@@ -76,4 +76,22 @@ describe('RequestList status dot', () => {
     const { container } = render(RequestList, { ctx } as never)
     expect(dotColors(container)).toContain('var(--dt-accent)')
   })
+
+  it('pulls focus into the list when the panel is opened by the user', () => {
+    // Resurrects the documented arrow-key browsing: it was unreachable because
+    // togglePanel opened the panel but focus stayed in the host app, and
+    // DevToolsApp refuses arrows unless focus is inside the devtools.
+    const ctx = createDevToolsContext(fakeClient([record({ status: 200 })]))
+    ctx.togglePanel() // deliberate open raises the focus request
+    const { container } = render(RequestList, { ctx } as never)
+    expect(document.activeElement).toBe(container.querySelector('.request-list'))
+  })
+
+  it('does NOT steal focus when the panel state is merely restored', () => {
+    // No togglePanel() call — this models the persisted-open restore on page
+    // load, which must not yank focus from the host app on every view.
+    const ctx = createDevToolsContext(fakeClient([record({ status: 200 })]))
+    const { container } = render(RequestList, { ctx } as never)
+    expect(document.activeElement).not.toBe(container.querySelector('.request-list'))
+  })
 })

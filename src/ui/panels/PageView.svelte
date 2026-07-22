@@ -829,6 +829,13 @@
     outline: none;
   }
 
+  /* Keyboard focus stays visible; a mouse click does not draw a ring. */
+  .search-input:focus-visible {
+    outline: 2px solid var(--dt-accent);
+    outline-offset: -1px;
+    border-color: var(--dt-accent);
+  }
+
   .search-input::placeholder {
     color: var(--dt-text-muted);
   }

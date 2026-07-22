@@ -176,6 +176,15 @@
     listEl.querySelector<HTMLElement>(`[data-visit-id="${id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'auto' })
   })
 
+  // When the panel is opened by a user action, pull focus into the list so the
+  // documented arrow-key browsing works — the list container is the focus
+  // target (not the filter input, which would swallow the arrows). The store
+  // only raises this on a deliberate open, never on the persisted-open restore
+  // at load, so it doesn't steal focus from the host app on every page view.
+  $effect(() => {
+    if (ctx.consumePanelFocusRequest()) listEl?.focus()
+  })
+
   let expandedPollGroups = $state(new Set<string>())
 
   function isGroupExpanded(group: PollGroup): boolean {
@@ -191,7 +200,12 @@
 </script>
 
 <div class="request-list-wrapper" style:width="{list.size}px">
-  <div class="request-list" bind:this={listEl}>
+  <!-- tabindex -1: focusable programmatically (see the focus effect) so arrow
+       keys browse the list, but not a Tab stop of its own. Deliberately NO
+       role="listbox" — DevToolsApp's targetOwnsKeys treats a listbox as owning
+       its own arrows and would then refuse to browse; the global arrow handler
+       is what drives selection here. -->
+  <div class="request-list" bind:this={listEl} tabindex="-1" aria-label="Captured requests">
     {#if ctx.state.requests.length > 0}
       <div class="filter-bar">
         {#if activeCategories.size > 1}
@@ -446,6 +460,13 @@
     background: var(--dt-bg);
     color: var(--dt-text);
     outline: none;
+  }
+
+  /* Keyboard focus stays visible; a mouse click does not draw a ring. */
+  .search-input:focus-visible {
+    outline: 2px solid var(--dt-accent);
+    outline-offset: -1px;
+    border-color: var(--dt-accent);
   }
 
   .search-input::placeholder {
