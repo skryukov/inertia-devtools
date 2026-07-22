@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning].
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking (manual setup only):** auto-init on side-effect import moved from `inertia-devtools` to `inertia-devtools/auto`. A bare `import 'inertia-devtools'` no longer boots devtools — it is now a pure, side-effect-free module, so `sideEffects` is scoped to `./dist/auto.js` and the main entry is fully tree-shakeable. Previously `"sideEffects": ["./dist/*.js"]` forced every bundler to keep the whole package, so a guarded snippet that never booted still shipped ~200 KB of dead devtools — including a publicly fetchable UI chunk — to webpack/Rollup/Rspack/Laravel Mix builds; the same snippet now tree-shakes to a few bytes. Users of the Vite plugin are unaffected (it injects an explicit, router-carrying init and strips both entries). Users who relied on `import 'inertia-devtools'` booting devtools should switch to `import 'inertia-devtools/auto'` ([@skryukov])
+
 ### Security
 
 - Exports no longer leak server props. `Copy for AI` / `Copy JSON` / `Copy raw` shipped page props verbatim, and the Rails and Laravel adapters put a live `csrf_token` in props on **every** page — so a developer pasting a failing form into a public GitHub issue shipped a live CSRF token, whatever session or API tokens the app shares, and the signed-in user's PII. Props stay unmasked in the panel on purpose (you cannot debug props you cannot see); the clipboard is a different audience. All five exporters plus the raw-copy button now mask on the way out, covering `page`, `previousPage`, and `events[].detail` — which holds a second full copy of the props via `structuredClone`. The export walker has no depth cap, unlike the capture-path one, because bailing out past a depth limit returns the raw subtree ([@skryukov])

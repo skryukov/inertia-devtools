@@ -138,11 +138,16 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       strip = stripInProduction && (config.command === 'build' || isTestRunner)
     },
     resolveId(source, importer) {
-      if (source === 'inertia-devtools') {
+      // Both the package and its side-effect entry are intercepted: a build must
+      // strip `inertia-devtools/auto` as thoroughly as the bare package, or the
+      // production-strip guarantee has a hole the moment someone imports it.
+      if (source === 'inertia-devtools' || source === 'inertia-devtools/auto') {
         if (strip) {
           return NOOP_ID
         }
-        // Intercept bare imports from user code (not from our virtual module)
+        // Intercept bare imports from user code (not from our virtual module).
+        // Routing both to INIT_ID gives a manual `/auto` import the same
+        // router-carrying init the auto-injected path gets.
         if (importer && !importer.startsWith('\0')) {
           return INIT_ID
         }

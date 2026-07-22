@@ -15,6 +15,7 @@ export default defineConfig({
       entry: {
         index: resolve(__dirname, 'src/index.ts'),
         entry: resolve(__dirname, 'src/entry.ts'),
+        auto: resolve(__dirname, 'src/auto.ts'),
         vite: resolve(__dirname, 'src/vite.ts'),
       },
       formats: ['es'],

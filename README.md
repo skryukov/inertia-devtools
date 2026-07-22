@@ -35,11 +35,11 @@ export default defineConfig({
 The plugin auto-injects devtools into your Inertia entrypoint on the dev server and strips them from every build automatically.
 
 > [!NOTE]
-> Auto-injection looks for a module that imports `createInertiaApp` from an `@inertiajs/*` package. If you wrap that import behind your own module, add `import 'inertia-devtools'` to your entrypoint yourself — the plugin still handles options and production stripping.
+> Auto-injection looks for a module that imports `createInertiaApp` from an `@inertiajs/*` package. If you wrap that import behind your own module, add `import 'inertia-devtools/auto'` to your entrypoint yourself — the plugin still handles options and production stripping.
 
 ### Without Vite
 
-Import and initialize manually:
+Import and initialize manually. This is the recommended form — the main entry has no side effects, so a production build tree-shakes the whole devtools away when the call sits in dead code:
 
 ```ts
 import { createInertiaDevtools } from 'inertia-devtools'
@@ -49,7 +49,13 @@ if (process.env.NODE_ENV === 'development') {
 }
 ```
 
-Importing the module auto-initializes devtools in development. The auto-init is gated on your bundler's `process.env.NODE_ENV` replacement, so production builds get dead code even without the Vite strip plugin — but only the plugin guarantees zero shipped bytes.
+Prefer a side-effect import? Use the dedicated entry, which auto-initializes in development:
+
+```ts
+import 'inertia-devtools/auto'
+```
+
+Both forms gate on your bundler's `process.env.NODE_ENV` replacement (and Vite's `import.meta.env.DEV`), so the devtools never boot in production. The difference is bytes: `inertia-devtools/auto` is side-effectful and ships with your bundle, while the bare `inertia-devtools` import above is fully tree-shakeable — but only the Vite plugin guarantees zero shipped bytes.
 
 > [!NOTE]
 > When the Vite plugin is active, pass options to `inertiaDevtools({ ... })` in `vite.config.ts` — the plugin initializes devtools before app code runs, so a later `createInertiaDevtools(options)` call in the app is a no-op.
@@ -143,7 +149,7 @@ The UI renders inside a Shadow DOM -- your app styles are never affected.
 
 State is kept in a bounded buffer (200 requests max).
 
-In any build the Vite plugin resolves devtools imports to a no-op, so `import 'inertia-devtools'` can stay in your code permanently — zero bytes ship to users. Stripping keys off `vite build`, not off `--mode`: a preview or QA host built with `--mode development` is still a build, and still strips. Devtools appear on the dev server (`vite`) whatever the mode.
+In any build the Vite plugin resolves devtools imports to a no-op, so `import 'inertia-devtools'` and `import 'inertia-devtools/auto'` can stay in your code permanently — zero bytes ship to users. Stripping keys off `vite build`, not off `--mode`: a preview or QA host built with `--mode development` is still a build, and still strips. Devtools appear on the dev server (`vite`) whatever the mode.
 
 To ship devtools inside a build on purpose, opt out explicitly with `inertiaDevtools({ stripInProduction: false })` and pair it with the runtime `enabled` option to control who sees the panel.
 

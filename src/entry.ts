@@ -209,21 +209,15 @@ export function shouldAutoInit(importMetaDev: unknown, readNodeEnv: () => string
   }
 }
 
-const importMetaDev = (() => {
-  try {
-    const meta = import.meta as unknown as { env?: { DEV?: unknown } }
-    return meta.env?.DEV
-  } catch {
-    return undefined
-  }
-})()
-
-// Auto-init on side-effect import: `import 'inertia-devtools'`.
-// Runs immediately if no explicit createInertiaDevtools() call is made.
-// Uses a microtask to allow createInertiaDevtools() to be called first.
-// `process.env.NODE_ENV` is read inside the arrow so it stays a bare, textually
-// replaceable token for webpack/Rollup/esbuild.
-if (typeof window !== 'undefined' && shouldAutoInit(importMetaDev, () => process.env.NODE_ENV)) {
+/**
+ * Boot on a microtask unless an explicit `createInertiaDevtools()` already ran.
+ * Called only from the side-effect entry `inertia-devtools/auto`; this module
+ * itself has NO top-level side effect, so `import 'inertia-devtools'` is pure
+ * and fully tree-shakeable (`sideEffects: ["./dist/auto.js"]`). Splitting it out
+ * is what stopped ~200 KB of dead devtools shipping to webpack/Rollup consumers
+ * behind a guarded snippet.
+ */
+export function autoInitIfIdle(): void {
   queueMicrotask(() => {
     if (!initialized) {
       init(defaultOptions)

@@ -84,6 +84,13 @@ describe('inertiaDevtools vite plugin', () => {
       expect(plugin.resolveId('inertia-devtools')).toBe(null)
     })
 
+    it('resolves the /auto side-effect entry to the init module too', () => {
+      // A manual `import 'inertia-devtools/auto'` gets the same router-carrying
+      // init the auto-injected path gets.
+      const plugin = makePlugin(devServer)
+      expect(plugin.resolveId('inertia-devtools/auto', '/src/app.ts')).toBe(INIT_ID)
+    })
+
     it('ignores unrelated modules', async () => {
       const plugin = makePlugin(devServer)
       expect(plugin.resolveId('svelte', '/src/app.ts')).toBe(null)
@@ -216,6 +223,12 @@ describe('inertiaDevtools vite plugin', () => {
       const plugin = makePlugin(prodBuild)
       expect(plugin.resolveId('inertia-devtools', '/src/app.ts')).toBe(NOOP_ID)
       expect(plugin.resolveId('inertia-devtools')).toBe(NOOP_ID)
+    })
+
+    it('strips the /auto side-effect entry too — the strip guarantee has no side door', () => {
+      const plugin = makePlugin(prodBuild)
+      expect(plugin.resolveId('inertia-devtools/auto', '/src/app.ts')).toBe(NOOP_ID)
+      expect(plugin.resolveId('inertia-devtools/auto')).toBe(NOOP_ID)
     })
 
     it('stubs every value export declared in index.ts (derived, cannot drift)', async () => {
