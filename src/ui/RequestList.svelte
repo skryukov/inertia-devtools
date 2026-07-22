@@ -113,6 +113,19 @@
 
   const list = useResizable({ axis: 'x', storageKey: 'list-width', min: 180, max: 500, initial: 260 })
 
+  // Keyboard resize (WAI-ARIA window-splitter): the handle promised a resizable
+  // separator via role + aria-label but had no keyboard operation. Left/Right
+  // nudge the list width; Home/End jump to the min/max.
+  function resizeKeydown(e: KeyboardEvent) {
+    const step = e.shiftKey ? 48 : 16
+    if (e.key === 'ArrowRight') list._nudge(step)
+    else if (e.key === 'ArrowLeft') list._nudge(-step)
+    else if (e.key === 'Home') list._nudge(list.min - list.size)
+    else if (e.key === 'End') list._nudge(list.max - list.size)
+    else return
+    e.preventDefault()
+  }
+
   /** Map request type to filter category */
   function filterCategory(req: RequestRecord): string {
     const t = req.type
@@ -357,12 +370,19 @@
       {/each}
     {/if}
   </div>
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     class="resize-handle"
     role="separator"
     aria-orientation="vertical"
     aria-label="Resize request list"
+    aria-valuenow={Math.round(list.size)}
+    aria-valuemin={list.min}
+    aria-valuemax={list.max}
+    tabindex="0"
     onpointerdown={list.onResizeStart}
+    onkeydown={resizeKeydown}
   >
     <div class="resize-grip"></div>
   </div>

@@ -122,3 +122,35 @@ describe('RequestList filter chips', () => {
     expect(container.querySelectorAll('.filter-chip')[0].getAttribute('aria-pressed')).toBe('false')
   })
 })
+
+describe('RequestList resize handle keyboard', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    resetMediaQueries()
+  })
+  afterEach(cleanup)
+
+  it('resizes the list with arrows and jumps to min/max with Home/End', async () => {
+    // The handle carried role="separator" + aria-label but no keyboard
+    // operation — a resizable widget a keyboard user could never move.
+    const ctx = createDevToolsContext(fakeClient([record({ status: 200 })]))
+    const { container } = render(RequestList, { ctx } as never)
+    const handle = container.querySelector('.resize-handle') as HTMLElement
+    expect(handle.getAttribute('role')).toBe('separator')
+    expect(handle.getAttribute('tabindex')).toBe('0')
+
+    const now = () => Number(handle.getAttribute('aria-valuenow'))
+    const min = Number(handle.getAttribute('aria-valuemin'))
+    const max = Number(handle.getAttribute('aria-valuemax'))
+    const start = now()
+
+    await fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    expect(now()).toBe(start + 16)
+    await fireEvent.keyDown(handle, { key: 'ArrowLeft' })
+    expect(now()).toBe(start)
+    await fireEvent.keyDown(handle, { key: 'End' })
+    expect(now()).toBe(max)
+    await fireEvent.keyDown(handle, { key: 'Home' })
+    expect(now()).toBe(min)
+  })
+})

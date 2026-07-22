@@ -112,6 +112,27 @@
     )
   }
 
+  /**
+   * Keyboard resize for the edge separators (WAI-ARIA window-splitter pattern).
+   * The handles carried role="separator" + aria-label but no tabindex or key
+   * handler, so they announced a resizable widget a keyboard user could never
+   * operate. Arrows nudge the pane; Home/End jump to the min/max. A horizontal
+   * separator (top edge) resizes height with Up/Down; a vertical one (side
+   * edges) resizes width with Left/Right.
+   */
+  type Resizable = typeof panelHeight
+  function resizeKeydown(e: KeyboardEvent, r: Resizable, orientation: 'horizontal' | 'vertical') {
+    const step = e.shiftKey ? 48 : 16
+    const grow = orientation === 'horizontal' ? 'ArrowUp' : 'ArrowRight'
+    const shrink = orientation === 'horizontal' ? 'ArrowDown' : 'ArrowLeft'
+    if (e.key === grow) r._nudge(step)
+    else if (e.key === shrink) r._nudge(-step)
+    else if (e.key === 'Home') r._nudge(r.min - r.size)
+    else if (e.key === 'End') r._nudge(r.max - r.size)
+    else return
+    e.preventDefault()
+  }
+
   // Prevent scroll events from leaking to the host page
   function trapScroll(e: WheelEvent) {
     let el = e.target as HTMLElement | null
@@ -142,32 +163,53 @@
 >
   {#if !pip}
     <!-- Top edge resize handle (height) -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="resize-handle-top"
       role="separator"
       aria-orientation="horizontal"
       aria-label="Resize devtools panel height"
+      aria-valuenow={Math.round(panelHeight.size)}
+      aria-valuemin={panelHeight.min}
+      aria-valuemax={Math.round(panelHeight.max)}
+      tabindex="0"
       onpointerdown={panelHeight.onResizeStart}
+      onkeydown={(e) => resizeKeydown(e, panelHeight, 'horizontal')}
     >
       <div class="resize-grip"></div>
     </div>
 
     <!-- Left edge resize handle (width) -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="resize-handle-left"
       role="separator"
       aria-orientation="vertical"
       aria-label="Resize devtools panel width"
+      aria-valuenow={Math.round(panelWidth.size)}
+      aria-valuemin={panelWidth.min}
+      aria-valuemax={Math.round(panelWidth.max)}
+      tabindex="0"
       onpointerdown={(e) => startSideResize(e, 'left')}
+      onkeydown={(e) => resizeKeydown(e, panelWidth, 'vertical')}
     ></div>
 
     <!-- Right edge resize handle (width) -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="resize-handle-right"
       role="separator"
       aria-orientation="vertical"
       aria-label="Resize devtools panel width"
+      aria-valuenow={Math.round(panelWidth.size)}
+      aria-valuemin={panelWidth.min}
+      aria-valuemax={Math.round(panelWidth.max)}
+      tabindex="0"
       onpointerdown={(e) => startSideResize(e, 'right')}
+      onkeydown={(e) => resizeKeydown(e, panelWidth, 'vertical')}
     ></div>
 
     <!-- Corner resize handles -->

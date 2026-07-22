@@ -97,13 +97,26 @@ export function useResizable(opts: {
     get resizing() {
       return resizing
     },
+    /** Lower bound — for aria-valuemin on keyboard-operable handles. */
+    get min() {
+      return min
+    },
+    /** Current upper bound (viewport-dependent) — for aria-valuemax. */
+    get max() {
+      return getMax()
+    },
     onResizeStart,
-    /** Set size directly (for corner resize). Clamps to min/max. */
+    /** Set size directly (for corner + keyboard resize). Clamps to min/max. */
     _setSize(v: number) {
       size = clamp(v)
     },
     /** Persist current size to localStorage. */
     _save() {
+      saveSetting(storageKey, String(size))
+    },
+    /** Keyboard nudge: grow/shrink by `delta`, clamped, and persist. */
+    _nudge(delta: number) {
+      size = clamp(size + delta)
       saveSetting(storageKey, String(size))
     },
   }
