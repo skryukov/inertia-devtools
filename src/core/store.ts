@@ -34,6 +34,8 @@ export class DevToolsStore {
   private options: DevToolsOptions
   private previousSession: ReturnType<typeof loadSession> = null
   private saveTimer: ReturnType<typeof setTimeout> | undefined
+  /** Raw page reference → its deep clone, so byte-identical pages clone once. */
+  private pageCloneCache = new WeakMap<object, object>()
   private networkCaptureMode: NetworkCaptureMode = 'pending'
   private legacyInertiaWarned = false
 
@@ -254,18 +256,36 @@ export class DevToolsStore {
 
   private notify(): void {
     this.tick++
-    const state = this.getState()
-    for (const fn of this.subscribers) {
-      try {
-        fn(state)
-      } catch (e) {
-        console.warn('[inertia-devtools] Subscriber error:', e)
+
+    // Build the snapshot ONLY when something is listening. getState() shallow-
+    // copies the whole 200-record buffer, and it ran on every captured event
+    // even with zero subscribers — a single file upload fires ~1000 progress
+    // notifications, so that was 1000 full-buffer copies thrown away before the
+    // panel was ever opened.
+    if (this.subscribers.size > 0) {
+      const state = this.getState()
+      for (const fn of this.subscribers) {
+        try {
+          fn(state)
+        } catch (e) {
+          console.warn('[inertia-devtools] Subscriber error:', e)
+        }
       }
     }
 
     // Debounced save to sessionStorage
     clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => saveSession(this.requests), 1000)
+  }
+
+  /**
+   * Cancel the pending debounced session write. Called on teardown so a timer
+   * scheduled by the last notify() cannot fire after the store is gone and
+   * overwrite the persisted session with data from a destroyed instance.
+   */
+  dispose(): void {
+    clearTimeout(this.saveTimer)
+    this.saveTimer = undefined
   }
 
   /**
@@ -283,8 +303,24 @@ export class DevToolsStore {
         // recursive walk — this runs synchronously at navigation commit, and
         // the depth cap would otherwise truncate deep props (see TOO_DEEP).
         if (key === 'page' && value != null && typeof value === 'object') {
+          // Dedupe by identity. beforeUpdate/navigate/success each carry a page
+          // and each was structuredCloned independently — but navigate and
+          // success carry the SAME object (both read the router's current
+          // `this.page`), so one of the three deep copies per navigation was
+          // pure waste, and each retained its own megabytes. Inertia REPLACES
+          // `this.page` on every setPage (`this.page = p`) rather than mutating
+          // in place, so a shared reference can never carry stale content —
+          // verified against core 3.4.0. The cache is a WeakMap, so a clone is
+          // released the moment Inertia drops the raw page it keys on.
+          const cachedClone = this.pageCloneCache.get(value as object)
+          if (cachedClone !== undefined) {
+            result[key] = cachedClone
+            continue
+          }
           try {
-            result[key] = structuredClone(value)
+            const cloned = structuredClone(value)
+            this.pageCloneCache.set(value as object, cloned)
+            result[key] = cloned
             continue
           } catch {
             // Non-cloneable value snuck in — fall through to the safe walk

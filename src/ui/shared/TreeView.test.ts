@@ -64,6 +64,25 @@ describe('TreeView', () => {
     expect(screen.getByText('a:')).toBeTruthy()
     expect(screen.getByText('c:')).toBeTruthy()
     expect(screen.queryByText(/hidden/)).toBeNull()
+    expect(screen.queryByText(/Show \d+ more/)).toBeNull()
+  })
+
+  it('caps a huge collection even with NO search, and reveals more on demand', async () => {
+    // The B5 gap: the render budget used to bind only while searching, so
+    // expanding a plain 10k-element array mounted 10,002 components on the host
+    // app's main thread. That expand is the whole point of the tool.
+    const data = { users: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`u${i}`, i])) }
+    render(TreeView, { data: data.users, defaultOpen: true })
+
+    // First 50 rendered, the rest deferred behind the affordance.
+    expect(screen.getByText('u0:')).toBeTruthy()
+    expect(screen.queryByText('u49:')).toBeTruthy()
+    expect(screen.queryByText('u50:')).toBeNull()
+    expect(screen.getByText('250 not shown')).toBeTruthy()
+
+    await fireEvent.click(screen.getByText(/Show 100 more/))
+    expect(screen.queryByText('u149:')).toBeTruthy()
+    expect(screen.getByText('150 not shown')).toBeTruthy()
   })
 
   it('lets an explicit collapse win over search auto-expansion', async () => {

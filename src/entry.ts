@@ -114,6 +114,10 @@ function init(options: DevToolsOptions): void {
     const flush = () => store.flushPendingSave()
     window.addEventListener('pagehide', flush)
     teardowns.push(() => window.removeEventListener('pagehide', flush))
+
+    // Cancel any pending debounced session write on teardown, or a timer from
+    // the last notify() fires after destroy and persists a stale session.
+    teardowns.push(() => store.dispose())
   } catch (err) {
     if (typeof console !== 'undefined') {
       console.groupCollapsed('[inertia-devtools] Failed to start capture')

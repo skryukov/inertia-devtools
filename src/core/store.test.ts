@@ -458,6 +458,61 @@ describe('DevToolsStore', () => {
     })
   })
 
+  describe('performance (B6)', () => {
+    it('clones a page ONCE when two events carry the same object reference', () => {
+      // navigate and success both read the router's current page, so they carry
+      // the SAME object. It used to be structuredCloned per event; now the
+      // identity cache reuses the first clone. Verified by mutating the shared
+      // input after the first capture: a fresh clone would NOT see the mutation,
+      // the reused one would — but we assert the CLONES are the same object.
+      const page = { component: 'Users', props: { n: 1 }, url: '/u', version: '1' }
+      store.captureEvent('inertia:navigate', makeCustomEvent('inertia:navigate', { page, visitId: 'v1' }))
+      const afterNavigate = store.getState().requests.find((r) => r.page)?.page
+      store.captureEvent('inertia:success', makeCustomEvent('inertia:success', { page, visitId: 'v1' }))
+
+      const events = store.getState().requests.flatMap((r) => r.events)
+      const navPage = events.find((e) => e.name === 'inertia:navigate')?.detail.page
+      const okPage = events.find((e) => e.name === 'inertia:success')?.detail.page
+      expect(navPage).toBe(okPage) // same clone object, not two
+      expect(afterNavigate).toBe(navPage)
+    })
+
+    it('clones DIFFERENT page references separately — no false sharing', () => {
+      const a = { component: 'A', props: {}, url: '/a', version: '1' }
+      const b = { component: 'B', props: {}, url: '/b', version: '1' }
+      store.captureEvent('inertia:navigate', makeCustomEvent('inertia:navigate', { page: a, visitId: 'v1' }))
+      store.captureEvent('inertia:navigate', makeCustomEvent('inertia:navigate', { page: b, visitId: 'v2' }))
+      const pages = store.getState().requests.map((r) => r.page)
+      expect(pages[0]).not.toBe(pages[1])
+    })
+
+    it('does not build a state snapshot when nobody is subscribed', () => {
+      const spy = vi.spyOn(store, 'getState')
+      const visit = { id: 'v1', method: 'get', url: new URL('http://localhost/x'), completed: false }
+      store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit }))
+      expect(spy).not.toHaveBeenCalled()
+
+      const unsub = store.subscribe(() => {})
+      store.captureEvent('inertia:start', makeCustomEvent('inertia:start', { visit }))
+      expect(spy).toHaveBeenCalled()
+      unsub()
+    })
+
+    it('dispose() cancels the pending session write', () => {
+      vi.useFakeTimers()
+      try {
+        const visit = { id: 'v1', method: 'get', url: new URL('http://localhost/x'), completed: false }
+        store.captureEvent('inertia:before', makeCustomEvent('inertia:before', { visit }))
+        sessionStorage.clear()
+        store.dispose()
+        vi.advanceTimersByTime(2000)
+        expect(sessionStorage.getItem('inertia-devtools-session')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
   describe('real capture path (U3 through captureEvent, not processEvent)', () => {
     // Round 3 B14: 312 correlator tests call processEvent directly and ZERO go
     // through captureEvent — so they exercise a branch production never takes

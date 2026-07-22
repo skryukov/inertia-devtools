@@ -4,6 +4,7 @@
 
   /** Max children rendered per node while a search is active — see `entries`. */
   const MAX_RENDERED_CHILDREN = 50
+  const SHOW_MORE_BATCH = 100
   import TreeView from './TreeView.svelte'
 
   let {
@@ -67,18 +68,29 @@
   })
 
   /**
-   * Filtering to match paths is not enough on its own: a one-letter query like
-   * "e" legitimately matches most of a collection (every email, name and role
-   * contains one), so the filter barely reduces anything and thousands of
-   * nested components still mount synchronously. Cap what renders and say how
-   * much was left out — the count comes from the search, so nothing is hidden
-   * silently.
+   * The render budget is UNCONDITIONAL, not search-only. It used to bind only
+   * while a query was active, so expanding a plain `{ users: Array(10_000) }`
+   * mounted 10,002 nested components synchronously on the host app's main
+   * thread — and that expand is the whole point of the tool. A one-letter query
+   * like "e" also barely reduces a collection (every email/name/role contains
+   * one), which is why the cap has to apply to the matched set too.
+   *
+   * `shownLimit` grows on demand via the "Show N more" affordance, so nothing is
+   * permanently hidden — it is deferred until the user asks, off the first-paint
+   * path.
    */
-  const entries = $derived(searching ? matchingEntries.slice(0, MAX_RENDERED_CHILDREN) : allEntries)
+  let shownLimit = $state(MAX_RENDERED_CHILDREN)
+  const renderSource = $derived(searching ? matchingEntries : allEntries)
+  const entries = $derived(renderSource.slice(0, shownLimit))
 
-  /** Children not rendered: filtered out by the search, or over the cap. */
-  const hiddenCount = $derived(searching ? allEntries.length - entries.length : 0)
-  const cappedCount = $derived(matchingEntries.length - entries.length)
+  /** Over the render budget (revealable). */
+  const cappedCount = $derived(renderSource.length - entries.length)
+  /** Filtered out by the search entirely (only a new query brings them back). */
+  const hiddenCount = $derived(searching ? allEntries.length - matchingEntries.length : 0)
+
+  function showMore() {
+    shownLimit += SHOW_MORE_BATCH
+  }
 
   const preview = $derived.by(() => {
     if (data === null) return 'null'
@@ -128,13 +140,17 @@
           {forceExpand}
         />
       {/each}
+      {#if cappedCount > 0}
+        <div class="filtered-note" style:padding-left="{(depth + 1) * 14}px">
+          <button class="show-more" onclick={showMore}>
+            Show {Math.min(cappedCount, SHOW_MORE_BATCH)} more
+          </button>
+          <span>{cappedCount} not shown</span>
+        </div>
+      {/if}
       {#if hiddenCount > 0}
         <div class="filtered-note" style:padding-left="{(depth + 1) * 14}px">
-          {#if cappedCount > 0}
-            {cappedCount} more {cappedCount === 1 ? 'match' : 'matches'} not shown — refine the search
-          {:else}
-            {hiddenCount} non-matching {hiddenCount === 1 ? 'key' : 'keys'} hidden
-          {/if}
+          {hiddenCount} non-matching {hiddenCount === 1 ? 'key' : 'keys'} hidden
         </div>
       {/if}
       {#if entries.length === 0}
@@ -155,6 +171,20 @@
     font-style: italic;
     color: var(--dt-text-dim);
     padding-block: 2px;
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+  }
+
+  .show-more {
+    font: inherit;
+    font-style: normal;
+    color: var(--dt-accent);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
   }
 
   .tree-node {
