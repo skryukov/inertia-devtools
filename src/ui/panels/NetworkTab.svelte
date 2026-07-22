@@ -35,14 +35,14 @@
     const page = request.page
     const opts = request.visitOptions
 
-    const requestVersion = page?.version ?? undefined
+    const responseVersion = page?.version ?? undefined
     const partialData = request.only ?? null
     const partialExcept = request.except ?? null
     const errorBag = (opts?.errorBag as string) || null
     const resetData = opts?.reset as string[] | null
 
     return {
-      requestVersion,
+      responseVersion,
       partialData,
       partialExcept,
       errorBag,
@@ -138,17 +138,16 @@
           <span>{request.method}</span>
         </div>
 
-        {#if protocol.requestVersion}
-          <div class="protocol-row" title="X-Inertia-Version header">
-            <span class="protocol-label">Version:</span>
-            <span>{protocol.requestVersion}</span>
-            <span class="header-hint">X-Inertia-Version</span>
+        {#if protocol.responseVersion}
+          <div class="protocol-row" title="Asset version reported by the response page">
+            <span class="protocol-label">Response version:</span>
+            <span>{protocol.responseVersion}</span>
           </div>
         {/if}
 
         {#if request.page?.component}
-          <div class="protocol-row" title="X-Inertia-Partial-Component header">
-            <span class="protocol-label">Component:</span>
+          <div class="protocol-row" title="Component of the page in the response">
+            <span class="protocol-label">Response component:</span>
             <span>{request.page.component}</span>
           </div>
         {/if}

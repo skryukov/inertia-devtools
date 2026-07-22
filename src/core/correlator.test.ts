@@ -1173,8 +1173,23 @@ describe('Correlator', () => {
           200,
         ),
       )
-      target.processEvent(makeEvent('inertia:start', { visit: makeVisitObject({ id: REUSED, method: 'get' }) }, 210))
-      target.processEvent(makeEvent('inertia:finish', { visit: makeVisitObject({ id: REUSED }) }, 260))
+      target.processEvent(
+        makeEvent(
+          'inertia:start',
+          { visit: makeVisitObject({ id: REUSED, method: 'get', url: new URL('http://localhost/posts') }) },
+          210,
+        ),
+      )
+      // The successor's own finish carries its URL (here /posts, a same-URL
+      // redirect). The default fixture URL matched neither record, an artifact
+      // the old url-agnostic finish handling never noticed.
+      target.processEvent(
+        makeEvent(
+          'inertia:finish',
+          { visit: makeVisitObject({ id: REUSED, method: 'get', url: new URL('http://localhost/posts') }) },
+          260,
+        ),
+      )
     }
 
     it('leaves no record stuck in flight', () => {
@@ -1252,6 +1267,58 @@ describe('Correlator', () => {
       const finished = small.processEvent(makeEvent('inertia:finish', { visit: makeVisitObject({ id: SHARED }) }, 4))
       expect(finished).not.toBeNull()
       expect(finished!.method).toBe('GET')
+    })
+  })
+
+  describe('x-inertia-redirect id reuse (U4: original finish must not finalize the successor)', () => {
+    it('leaves the redirect successor in flight when the original request finishes', () => {
+      // Inertia reuses the visit id when it follows x-inertia-redirect, and
+      // router.visit() runs synchronously — the successor's before/start land
+      // BEFORE the original request's .finally(finish). The original's finish
+      // resolves by uuid to the successor and used to mark it done while it was
+      // still in flight, then drop its own beforeUpdate.
+      const id = 'reused-1'
+      const post = { id, method: 'post', url: new URL('http://localhost/save'), completed: false }
+      correlator.processEvent(makeEvent('inertia:before', { visit: post }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit: post }, 101))
+
+      // 409 x-inertia-redirect → router.visit(GET /users), SAME id, still in flight.
+      const get = { id, method: 'get', url: new URL('http://localhost/users'), completed: false }
+      correlator.processEvent(makeEvent('inertia:before', { visit: get }, 200))
+      correlator.processEvent(makeEvent('inertia:start', { visit: get }, 201))
+
+      // The original POST's finish arrives now, carrying the POST visit.
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...post, completed: true } }, 202))
+
+      const successor = correlator.getRequests().find((r) => r.url === '/users')!
+      expect(successor.finishedAt).toBeUndefined() // still genuinely in flight
+    })
+
+    it('the successor still gets its own beforeUpdate (no longer skipped as finished)', () => {
+      const id = 'reused-2'
+      const post = { id, method: 'post', url: new URL('http://localhost/save'), completed: false }
+      correlator.processEvent(makeEvent('inertia:before', { visit: post }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit: post }, 101))
+      const get = { id, method: 'get', url: new URL('http://localhost/users'), completed: false }
+      correlator.processEvent(makeEvent('inertia:before', { visit: get }, 200))
+      correlator.processEvent(makeEvent('inertia:start', { visit: get }, 201))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...post, completed: true } }, 202))
+
+      // beforeUpdate carries no id — it must resolve to the in-flight successor.
+      const target = correlator.processEvent(makeEvent('inertia:beforeUpdate', {}, 203))
+      expect(target).not.toBeNull()
+      expect(target!.url).toBe('/users')
+    })
+
+    it('a normal finish is unaffected — same url, applied as usual', () => {
+      const visit = makeVisitObject({ url: new URL('http://localhost/plain') })
+      correlator.processEvent(makeEvent('inertia:before', { visit }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit }, 101))
+      correlator.processEvent(makeEvent('inertia:finish', { visit: { ...visit, completed: true } }, 150))
+
+      const rec = correlator.getRequests().find((r) => r.url === '/plain')!
+      expect(rec.finishedAt).toBe(150)
+      expect(rec.completed).toBe(true)
     })
   })
 

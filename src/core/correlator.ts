@@ -405,11 +405,58 @@ export class Correlator {
     return record
   }
 
+  /**
+   * The finish that belongs to a visit whose id was reused by an
+   * `x-inertia-redirect`, or null if this finish is for the current holder of
+   * the uuid.
+   *
+   * `router.visit()` for the redirect runs synchronously — through the
+   * successor's before/start — BEFORE the original request's
+   * `.finally(() => finish())` fires, and `uuidMap` now points at the successor.
+   * So the original's finish resolves by uuid to the SUCCESSOR, which is still
+   * in flight, and marked it completed then dropped its own beforeUpdate.
+   *
+   * The finish event carries the ORIGINAL visit object, so its URL still names
+   * the original request. When that URL doesn't match the record the uuid now
+   * resolves to, the finish belongs to the earlier record —
+   * `finalizeSupersededVisit` already finished it, so the event is appended
+   * there and the successor is left in flight. (A redirect back to the SAME URL
+   * cannot be told apart this way; it self-heals when the successor's own finish
+   * lands.)
+   */
+  private supersededOriginalForFinish(
+    uuid: string | undefined,
+    visit: InertiaVisitDetail | null | undefined,
+    holder: RequestRecord,
+  ): RequestRecord | null {
+    if (!uuid || !visit || holder.finishedAt != null) return null
+    const finishUrl = this.extractUrl(visit)
+    if (!finishUrl || normalizeUrl(finishUrl) === normalizeUrl(holder.url)) return null
+
+    const path = normalizeUrl(finishUrl)
+    for (let i = this.sortedRecords.length - 1; i >= 0; i--) {
+      const r = this.sortedRecords[i]
+      if (r !== holder && r.inertiaVisitId === uuid && r.finishedAt != null && normalizeUrl(r.url) === path) {
+        return r
+      }
+    }
+    // The predecessor was evicted — still must not finalize the successor.
+    return holder
+  }
+
   private handleFinish(event: CapturedEvent, detail: Record<string, unknown>, timestamp: number): RequestRecord | null {
     const visit = this.extractVisit(detail)
     const uuid = visitUuid(visit)
     const record = uuid ? this.resolveByUuid(uuid) : this.resolveInFlight()
     if (!record) return null
+
+    // A stale finish from an id-reused predecessor: attribute it to the earlier
+    // record if it still exists, and never touch the in-flight successor.
+    const superseded = this.supersededOriginalForFinish(uuid, visit, record)
+    if (superseded) {
+      if (superseded !== record) this.appendEvent(superseded, event)
+      return superseded === record ? null : superseded
+    }
 
     if (!uuid) event.heuristic = true
     this.appendEvent(record, event)
