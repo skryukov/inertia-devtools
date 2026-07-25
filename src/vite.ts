@@ -148,8 +148,14 @@ const INIT_ID = '\0inertia-devtools-init'
 const NOOP_ID = '\0inertia-devtools-noop'
 
 /**
- * Mirrors the package's value exports so stripped builds never break on
- * named imports left in app code (types are erased at compile time).
+ * Stand-ins for every name app code might import, so a stripped build never
+ * breaks on a leftover named import (types are erased at compile time).
+ *
+ * Deliberately a SUPERSET of the current public API: `startCapture`,
+ * `createInRealmClient` and `DevToolsStore` are no longer exported from the
+ * package (they were shell internals, and 0.1.x published the first two), but a
+ * build must degrade to a no-op rather than fail on code that still imports
+ * them. Extra entries here are free; a missing one is a broken build.
  */
 const NOOP_MODULE = [
   'export function createInertiaDevtools() {}',
