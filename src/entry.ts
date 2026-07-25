@@ -195,15 +195,16 @@ async function mountUI(store: DevToolsStore, options: DevToolsOptions): Promise<
  * "dev" outright:
  * - `importMetaDev` is `import.meta.env.DEV`, which Vite statically replaces and
  *   which needs no `process`, so it survives the unbundled path.
- * - otherwise `readNodeEnv()` reads the bundler-replaced NODE_ENV.
- * - if reading it throws — unbundled browser, no `process` — return false. The
- *   old code returned TRUE here, which auto-booted full capture onto any CDN /
- *   importmap production page.
+ * - otherwise boot only when `readNodeEnv()` is exactly 'development'. Anything
+ *   else — 'production', an unknown mode, `undefined` (a browser `process` shim
+ *   that exposes `env` but no NODE_ENV), or a throw (no `process` at all) — must
+ *   NOT boot. The old `!== 'production'` check still booted on the `undefined`
+ *   case, auto-exposing capture on any CDN / importmap production page.
  */
 export function shouldAutoInit(importMetaDev: unknown, readNodeEnv: () => string | undefined): boolean {
   if (typeof importMetaDev === 'boolean') return importMetaDev
   try {
-    return readNodeEnv() !== 'production'
+    return readNodeEnv() === 'development'
   } catch {
     return false
   }

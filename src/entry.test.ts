@@ -187,4 +187,15 @@ describe('shouldAutoInit (fail-closed production gate)', () => {
       }),
     ).toBe(false)
   })
+
+  it('does NOT boot when NODE_ENV reads undefined — a browser process shim exposing env but no value', () => {
+    // The residual fail-OPEN the review caught: `process.env` exists so the read
+    // does not throw, but NODE_ENV is unset. `!== 'production'` booted here;
+    // `=== 'development'` refuses. Flip the operator back and this fails.
+    expect(shouldAutoInit(undefined, () => undefined)).toBe(false)
+  })
+
+  it('does NOT boot for an unrecognized NODE_ENV like a custom "staging" mode', () => {
+    expect(shouldAutoInit(undefined, () => 'staging')).toBe(false)
+  })
 })
