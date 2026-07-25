@@ -2,7 +2,7 @@
 
 In-app developer tools for [Inertia.js](https://inertiajs.com/) v3.4+. See what happens behind every click.
 
-Inertia 3.6 features — `inertia:location` redirect details and `router.poll()` detection — light up automatically and degrade gracefully on 3.4/3.5. Known 3.4/3.5 limits: polls appear as ordinary reloads (partial when `only`/`except` is used), and 409 hard reloads fire no Inertia event — they surface best-effort via Resource Timing (Chromium 109+) as "409 Conflict — server forced a full page reload". On all versions, capture is scoped to Inertia router visits — `useHttp` calls, precognition requests, and custom HTTP clients don't go through it.
+Inertia 3.6 features — `inertia:location` redirect details and `router.poll()` detection — light up automatically and fall back to the labelled behavior below on 3.4/3.5, rather than degrading silently. Known 3.4/3.5 limits: polls appear as ordinary reloads (partial when `only`/`except` is used), and 409 hard reloads fire no Inertia event — they surface best-effort via Resource Timing (Chromium 109+) as "409 Conflict — server forced a full page reload". On all versions, capture is scoped to Inertia router visits — `useHttp` calls, precognition requests, and custom HTTP clients don't go through it.
 
 <p align="center">
   <img src=".github/screenshot.png" alt="Inertia DevTools screenshot" width="800">
@@ -76,6 +76,9 @@ HTTP request/response data as Inertia's router sees it: status codes, request an
 
 If your server emits a [`Server-Timing`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Server-Timing) header, its metrics (database, view, etc.) render as a per-request breakdown with proportional bars.
 
+> [!IMPORTANT]
+> Wire data (headers, status, body size) comes from `window.__inertia_interceptors__`, which Inertia declares `@internal` — "Not part of the public API. May change or be removed without notice." The devtools duck-type the interface and treat any unexpected shape as unavailable, so an upstream change costs you the wire data, not a broken app: the Network tab then labels itself "Timing only" and falls back to Resource Timing. Everything else in the panel is built on public Inertia DOM events.
+
 ### Events Timeline
 
 Full Inertia lifecycle in chronological order:
@@ -113,13 +116,13 @@ Each badge links to the relevant documentation page. POLL needs the `poll` flag 
 
 Toggle visibility by category: visits, mutations, partial, deferred, prefetch, poll, and client-side visits. Chips only appear for categories present in the current session, so the poll chip stays hidden on 3.4/3.5.
 
-### Copy for AI
+### Copy debug context
 
 Every tab has a context-aware Copy button: full request summary, props diff, events timeline, or network data as focused markdown for GitHub issues and AI chats — plus a stable JSON export of the whole request record.
 
 ### More
 
-- **Picture-in-Picture** -- pop the panel out into its own window
+- **Pop out** -- open the panel in its own window (a popup, so it is not always-on-top and can be blocked)
 - **Dark/light/system theme** with manual override
 - **Replay** -- re-issue a selected GET visit (same partial-reload keys) from the panel; non-GET replays are refused since they would re-submit the mutation. Needs the app's router — automatic with the Vite plugin, manual installs pass `router` in options
 - **Open in editor** -- with the Vite plugin, click the current component's name to jump straight to its source file in your editor (dev only, see below)
@@ -127,7 +130,7 @@ Every tab has a context-aware Copy button: full request summary, props diff, eve
 - **Previous session** -- requests from before page reload in a collapsible section
 - **Draggable trigger** -- floating icon with position persisted to localStorage
 - **Shadow DOM isolation** -- styles never leak into your app
-- **Framework agnostic** -- works with React, Vue, and Svelte
+- **Framework-neutral core** -- captures shared Inertia DOM events, so nothing is adapter-specific. React is the adapter verified in a real browser in CI; Vue and Svelte are covered by unit tests only
 
 ## Options
 
