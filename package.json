@@ -38,7 +38,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
     "typecheck": "tsc --noEmit",
-    "check:svelte": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "check:svelte": "svelte-check --tsconfig ./tsconfig.json --config svelte.config.js --fail-on-warnings",
     "check:css": "node scripts/check-css-tokens.mjs",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
