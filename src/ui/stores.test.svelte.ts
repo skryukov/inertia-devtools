@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { flushSync } from 'svelte'
 import type { StoreClient } from '../core/client'
 import type { DevToolsState, RequestRecord } from '../core/types'
-import { createDevToolsContext } from './stores.svelte'
+import { createDevToolsContext, loadActiveTab } from './stores.svelte'
 import { mediaQuery, resetMediaQueries } from '../test-setup'
 
 /**
@@ -138,5 +138,35 @@ describe('createDevToolsContext', () => {
     // would pass even with the subscription still live.
     expect(client.listenerCount()).toBe(0)
     expect(mql.listenerCount()).toBe(0)
+  })
+})
+
+describe('loadActiveTab (stale tab migration)', () => {
+  const KEY = 'inertia-devtools-tab'
+  beforeEach(() => localStorage.clear())
+
+  it('maps a stale tab id forward AND persists it, so the migration runs once', () => {
+    localStorage.setItem(KEY, 'page')
+    expect(loadActiveTab()).toBe('props')
+    // The write-back is the fix: the old inline migration reassigned the rune
+    // but never touched storage, so 'page' was re-migrated on every load
+    // forever. Drop the saveSetting call and this assertion fails.
+    expect(localStorage.getItem(KEY)).toBe('props')
+  })
+
+  it('migrates the other stale id too', () => {
+    localStorage.setItem(KEY, 'raw')
+    expect(loadActiveTab()).toBe('props')
+    expect(localStorage.getItem(KEY)).toBe('props')
+  })
+
+  it('leaves a current tab untouched and writes nothing', () => {
+    localStorage.setItem(KEY, 'network')
+    expect(loadActiveTab()).toBe('network')
+    expect(localStorage.getItem(KEY)).toBe('network')
+  })
+
+  it('falls back to props when nothing is stored', () => {
+    expect(loadActiveTab()).toBe('props')
   })
 })

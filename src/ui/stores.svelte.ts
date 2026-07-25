@@ -16,6 +16,25 @@ export interface DevToolsContextOptions {
   styleNonce?: string
 }
 
+/** Tab ids that earlier versions persisted, mapped to the tab that replaced them. */
+const RENAMED_TABS: Record<string, string> = { page: 'props', raw: 'props' }
+
+/**
+ * Read the persisted tab, mapping any stale id forward. The migration is
+ * WRITTEN BACK, so it runs once instead of on every load — the old inline
+ * version reassigned the rune after initialization, which both left the stale
+ * value in storage forever and tripped Svelte's `state_referenced_locally`
+ * warning (a `$state` read outside a closure captures only the initial value).
+ * Exported for direct testing: the write-back is the part worth pinning.
+ */
+export function loadActiveTab(): string {
+  const stored = loadSetting('tab', 'props')
+  const migrated = RENAMED_TABS[stored]
+  if (!migrated) return stored
+  saveSetting('tab', migrated)
+  return migrated
+}
+
 export function createDevToolsContext(client: StoreClient, options: DevToolsContextOptions = {}) {
   let tick = $state(0)
   // Shallow-clone each record so Svelte's keyed {#each} sees new object
@@ -35,7 +54,7 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
   let panelOpen = $state(false)
   let pipOpen = $state(false)
   let pipHandle: PipHandle | null = null
-  let activeTab = $state<string>(loadSetting('tab', 'props'))
+  let activeTab = $state<string>(loadActiveTab())
   let theme = $state<Theme>(loadSetting('theme', 'system') as Theme)
   let requestFilter = $state('')
   let inertiaNotDetectedReady = $state(false)
@@ -172,9 +191,6 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
     }
   }
 
-  // Migrate stale tab names to 'props'
-  if (activeTab === 'page' || activeTab === 'raw') activeTab = 'props'
-
   function setActiveTab(tab: string) {
     activeTab = tab
     saveSetting('tab', tab)
@@ -192,10 +208,6 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
 
   function replayVisit(visitId: number) {
     client.replayVisit(visitId)
-  }
-
-  function reload() {
-    client.reload()
   }
 
   function cycleTheme() {
@@ -324,7 +336,6 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
     setActiveTab,
     clearAll,
     replayVisit,
-    reload,
     setRequestFilter,
     cycleTheme,
     destroy,

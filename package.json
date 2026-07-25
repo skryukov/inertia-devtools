@@ -40,6 +40,7 @@
     "typecheck": "tsc --noEmit",
     "check:svelte": "svelte-check --tsconfig ./tsconfig.json --config svelte.config.js --fail-on-warnings",
     "check:css": "node scripts/check-css-tokens.mjs",
+    "check:build": "node scripts/check-build-warnings.mjs",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "prettier --write .",

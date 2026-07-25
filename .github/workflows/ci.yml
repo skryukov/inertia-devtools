@@ -28,7 +28,10 @@ jobs:
       # its fallback, or inherits. Four shipped that way.
       - run: npm run check:css
       - run: npm test
-      - run: npm run build
+      # Builds AND gates the build's own output: svelte-check reports zero
+      # warnings while the compiler emits its own through the Vite build, and
+      # nothing used to read that. Replaces a bare `npm run build`.
+      - run: npm run check:build
 
   # Catches breakage in the @internal Inertia APIs we depend on
   # when new @inertiajs/core versions ship.
