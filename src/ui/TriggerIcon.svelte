@@ -8,6 +8,19 @@
   let pos = $state({ x: 16, y: 16 })
   let dragging = $state(false)
   let dragOffset = { x: 0, y: 0 }
+  /**
+   * Below this, a pointerup is a click and not a drag.
+   *
+   * There was no threshold at all, and the click guard (`if (dragging) return`)
+   * was dead code: `pointerup` fires BEFORE `click` and had already set
+   * `dragging = false`, so every reposition of the trigger also toggled the
+   * panel. Tracked separately from `dragging` for that reason — the flag the
+   * click handler reads must survive pointerup.
+   */
+  const DRAG_THRESHOLD_PX = 4
+  let pointerStart = { x: 0, y: 0 }
+  let moved = false
+  let suppressClick = false
 
   // Status effect
   type StatusEffect = 'idle' | 'active' | 'success' | 'redirect' | 'error' | 'prefetch'
@@ -16,18 +29,39 @@
   let effectTimeout: ReturnType<typeof setTimeout> | null = null
   let prevEffect: StatusEffect = 'idle'
 
-  // Restore position from localStorage
+  /**
+   * Keep the trigger on screen. `pos` is a right/bottom offset, clamped at drag
+   * time — but nothing re-clamped it on load or on resize, so a position saved
+   * on a 2560px monitor put the button ~1200px off-screen when the same profile
+   * reopened on a laptop, with no way back but clearing localStorage.
+   */
+  function clampPos(p: { x: number; y: number }): { x: number; y: number } {
+    const maxX = Math.max(0, window.innerWidth - 36)
+    const maxY = Math.max(0, window.innerHeight - 36)
+    return { x: Math.min(Math.max(0, p.x), maxX), y: Math.min(Math.max(0, p.y), maxY) }
+  }
+
+  // Restore position from localStorage, clamped to the CURRENT viewport.
   {
     const saved = loadSetting('trigger-pos', '')
     if (saved) {
       try {
         const parsed = JSON.parse(saved)
-        pos = { x: parsed.x ?? 16, y: parsed.y ?? 16 }
+        pos = clampPos({ x: parsed.x ?? 16, y: parsed.y ?? 16 })
       } catch {
         /* ignore */
       }
     }
   }
+
+  // Re-clamp when the window shrinks (rotate, split-screen, smaller display).
+  $effect(() => {
+    const onResize = () => {
+      pos = clampPos(pos)
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  })
 
   // Watch latest request for status effects.
   // Read tick to ensure re-evaluation when records are mutated in place.
@@ -38,6 +72,11 @@
 
     if (!latest.finishedAt) {
       setEffect('active')
+    } else if (latest.failed) {
+      // Before the prefetch/status branches: a network-failed visit has no
+      // status, so it used to pulse green. A failed prefetch is a failure, not
+      // a prefetch.
+      setEffect('error')
     } else if (latest.type === 'prefetch') {
       setEffect('prefetch')
     } else if (latest.status && latest.status >= 400) {
@@ -47,7 +86,15 @@
     } else {
       setEffect('success')
     }
+  })
 
+  // Cleanup belongs to the component's lifetime, NOT to each re-run of the
+  // effect above. That effect depends on `tick`, so Svelte tore it down on
+  // every store notify — killing the 1500ms reset timer — and setEffect then
+  // early-returned because the classification had not changed, so no new timer
+  // was scheduled. The indicator latched on its last state and never pulsed
+  // again for the rest of the session.
+  $effect(() => {
     return () => {
       if (effectTimeout) clearTimeout(effectTimeout)
     }
@@ -76,6 +123,8 @@
 
   function onPointerDown(e: PointerEvent) {
     dragging = true
+    moved = false
+    pointerStart = { x: e.clientX, y: e.clientY }
     const el = e.currentTarget as HTMLElement
     const rect = el.getBoundingClientRect()
     dragOffset = {
@@ -87,6 +136,14 @@
 
   function onPointerMove(e: PointerEvent) {
     if (!dragging) return
+    // Repositioning starts only past the threshold, so the hand-tremor of an
+    // ordinary click does not nudge the icon a pixel and then swallow the click.
+    if (!moved) {
+      const dx = e.clientX - pointerStart.x
+      const dy = e.clientY - pointerStart.y
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
+      moved = true
+    }
     const vw = window.innerWidth
     const vh = window.innerHeight
     pos = {
@@ -95,19 +152,41 @@
     }
   }
 
-  function onPointerUp(e: PointerEvent) {
+  function endDrag(e: PointerEvent, wasCancelled: boolean) {
     if (!dragging) return
     dragging = false
 
-    saveSetting('trigger-pos', JSON.stringify(pos))
+    if (moved) {
+      if (!wasCancelled) saveSetting('trigger-pos', JSON.stringify(pos))
+      // pointerup runs first, so the click that follows must be told to stand
+      // down explicitly rather than re-reading `dragging`.
+      suppressClick = true
+    }
 
-    // Detect click (no significant drag)
     const el = e.currentTarget as HTMLElement
-    el.releasePointerCapture(e.pointerId)
+    // Throws InvalidStateError when capture was already released — a
+    // pointercancel (macOS back-swipe, touch gesture takeover) does exactly
+    // that, and the exception lands in the host app's error reporting.
+    try {
+      el?.releasePointerCapture(e.pointerId)
+    } catch {
+      /* capture already gone */
+    }
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    endDrag(e, false)
+  }
+
+  function onPointerCancel(e: PointerEvent) {
+    endDrag(e, true)
   }
 
   function onClick() {
-    if (dragging) return
+    if (suppressClick) {
+      suppressClick = false
+      return
+    }
     ctx.togglePanel()
   }
 
@@ -140,9 +219,10 @@
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
+  onpointercancel={onPointerCancel}
   onclick={onClick}
-  aria-label="Toggle Inertia DevTools"
-  title="Inertia DevTools"
+  aria-label="Toggle Inertia DevTools (Alt+Shift+D)"
+  title="Inertia DevTools (Alt+Shift+D)"
 >
   <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
     <path d="M4 4L9 9L4 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
@@ -212,13 +292,6 @@
     }
     100% {
       box-shadow: 0 0 0 8px transparent;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .trigger,
-    .trigger.active {
-      animation: none;
     }
   }
 </style>

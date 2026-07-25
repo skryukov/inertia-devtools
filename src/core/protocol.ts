@@ -14,6 +14,13 @@ export type InertiaPage = Pick<Page, 'component' | 'url' | 'version' | 'clearHis
   deepMergeProps?: string[]
   matchPropsOn?: string[]
   scrollProps?: Record<string, unknown>
+  /**
+   * Props whose server-side resolver threw and was rescued (Inertia >= 3.6):
+   * the response omits the prop so the page still renders. The list persists
+   * across visits until a partial reload re-requests the prop.
+   */
+  rescuedProps?: string[]
+  sharedProps?: string[]
   flash: Record<string, unknown>
   onceProps?: Record<string, { prop: string; expiresAt?: number | null }>
   rememberedState?: Record<string, unknown>
@@ -26,14 +33,13 @@ export const INERTIA_DOM_EVENTS = [
   'inertia:progress',
   'inertia:success',
   'inertia:error',
-  'inertia:invalid', // v2 (non-Inertia response)
-  'inertia:httpException', // v3 (replaces invalid)
-  'inertia:exception', // v2 (network/JS error)
-  'inertia:networkError', // v3 (replaces exception)
+  'inertia:httpException', // non-Inertia response (4xx/5xx)
+  'inertia:networkError', // network/JS error
+  'inertia:location', // server redirect / version-mismatch full reload (Inertia >= 3.6)
   'inertia:finish',
-  'inertia:cancel', // v2 only (v3 uses finish with cancelled flag)
   'inertia:beforeUpdate',
   'inertia:navigate',
+  'inertia:clientVisit', // router.push/replace/replaceProp/appendToProp/prependToProp
   'inertia:flash',
   'inertia:prefetching',
   'inertia:prefetched',

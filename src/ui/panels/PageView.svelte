@@ -1,12 +1,15 @@
 <script lang="ts">
   import type { InertiaPage } from '../../core/protocol'
-  import type { ActiveFeature, VisitType, DocsProvider } from '../../core/types'
+  import type { ActiveFeature, VisitType, DocsProvider, RequestRecord } from '../../core/types'
   import { diffProps, countTopLevelChanges } from '../../core/diff'
+  import { diffToMarkdown } from '../../core/markdown'
+  import { redactExport } from '../../core/redact'
   import { featureColor } from '../shared/feature-colors'
   import { getFeatureInfo } from '../shared/feature-info'
   import { copyToClipboard } from '../shared/clipboard'
   import { isNonEmptyRecord } from '../shared/storage'
-  import { jsonByteSize, formatBytes } from '../shared/format'
+  import { jsonByteSize, formatBytes, displayValue } from '../shared/format'
+  import { searchPaths } from '../shared/tree-search'
   import { ICON_COPY } from '../shared/icons'
   import TreeView from '../shared/TreeView.svelte'
   import DiffTreeView from '../shared/DiffTreeView.svelte'
@@ -23,6 +26,14 @@
     showRaw?: boolean
     visitId?: number
     docsProvider?: DocsProvider
+    /** The dev server can open component sources — renders the name as a link. */
+    sourceLinks?: boolean
+    /** Open the given component's source in the editor (parent shows the toast). */
+    onOpenSource?: (component: string) => void
+    /** Selected request record — enables the "Copy diff" affordance. */
+    request?: RequestRecord
+    /** Called after a copy action so the parent can show its toast. */
+    onCopied?: () => void
   }
 
   let {
@@ -37,6 +48,10 @@
     showRaw: externalShowRaw,
     visitId,
     docsProvider,
+    sourceLinks = false,
+    onOpenSource,
+    request,
+    onCopied,
   }: Props = $props()
 
   // Live view controls its own toggle; selected request gets it from parent
@@ -100,11 +115,34 @@
     return result
   })
 
+  // --- Props search ---
+  let searchInput = $state('')
+  let propsQuery = $state('')
+  let searchTimer: ReturnType<typeof setTimeout> | undefined
+
+  function handleSearchInput(value: string) {
+    searchInput = value
+    clearTimeout(searchTimer)
+    searchTimer = setTimeout(() => (propsQuery = value), 150)
+  }
+
+  $effect(() => {
+    return () => clearTimeout(searchTimer)
+  })
+
+  const searchActive = $derived(propsQuery.trim().length > 0)
+  // Lazy — only evaluated where the props tree renders (Preview mode, non-diff)
+  const searchResult = $derived.by(() => (searchActive ? searchPaths(filteredProps, propsQuery) : null))
+  const matchCount = $derived(searchResult?.matches.size ?? 0)
+
   // --- Diff ---
   const prevProps = $derived(previousPage?.props)
   const hasPrevious = $derived(prevProps !== undefined)
   let showDiff = $state(false)
   let showUnchanged = $state(false)
+  // Recomputes once per prop-tree change, not per render: $derived memoizes on
+  // its dependencies. The count is shown in the Diff button's badge, so it has
+  // to be computed whether or not the Diff view is open.
   const changeCount = $derived(
     hasPrevious ? countTopLevelChanges(prevProps as Record<string, unknown>, pageProps as Record<string, unknown>) : 0,
   )
@@ -122,9 +160,16 @@
     expandedFeature = null
   })
 
-  // --- Raw mode copy ---
-  function handleCopyRaw() {
-    copyToClipboard(JSON.stringify(page, null, 2))
+  // --- Copy actions ---
+  async function handleCopyRaw() {
+    // Bypasses markdown.ts, so it needs the export redaction of its own —
+    // this button puts props straight on the clipboard.
+    if (await copyToClipboard(JSON.stringify(redactExport(page), null, 2))) onCopied?.()
+  }
+
+  async function handleCopyDiff() {
+    if (!request) return
+    if (await copyToClipboard(diffToMarkdown(request))) onCopied?.()
   }
 </script>
 
@@ -133,7 +178,18 @@
     <span class="live-dot"></span>
     <span class="live-label">Live</span>
     <span class="live-separator"></span>
-    <span class="live-component">{componentName ?? page?.component}</span>
+    {#if sourceLinks && (componentName ?? page?.component)}
+      <button
+        type="button"
+        class="live-component as-link"
+        title="Open source in editor"
+        onclick={() => onOpenSource?.((componentName ?? page?.component)!)}
+      >
+        {componentName ?? page?.component}
+      </button>
+    {:else}
+      <span class="live-component">{componentName ?? page?.component}</span>
+    {/if}
     {#if errorCount > 0}
       <span class="live-error-badge">{errorCount} {errorCount === 1 ? 'error' : 'errors'}</span>
     {/if}
@@ -229,7 +285,11 @@
             {#each Object.entries(errors) as [key, value] (key)}
               <div class="kv-row">
                 <span class="kv-key">{key}</span>
-                <span class="kv-value error-value">{value}</span>
+                <!-- Adapters put arrays (or nested bags) here as often as
+                     strings; interpolating raw rendered "a,b" or the useless
+                     "[object Object]". The markdown export was fixed for this
+                     and the panel was not. -->
+                <span class="kv-value error-value">{displayValue(value)}</span>
               </div>
             {/each}
           </div>
@@ -246,7 +306,7 @@
             {#each Object.entries(flash) as [key, value] (key)}
               <div class="kv-row">
                 <span class="kv-key">{key}</span>
-                <span class="kv-value">{typeof value === 'string' ? value : JSON.stringify(value)}</span>
+                <span class="kv-value">{displayValue(value)}</span>
               </div>
             {/each}
           </div>
@@ -341,6 +401,20 @@
                 Show internal
               </label>
             {/if}
+            {#if showDiff && hasPrevious && request}
+              <button class="copy-btn" onclick={handleCopyDiff} title="Copy diff as Markdown">
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round">{@html ICON_COPY}</svg
+                >
+                Copy
+              </button>
+            {/if}
           </div>
         </div>
 
@@ -352,7 +426,7 @@
               <div class="size-row">
                 <span class="size-key">{key}</span>
                 <div class="size-bar-track">
-                  <div class="size-bar-fill" style:width="{pct}%"></div>
+                  <div class="size-bar-fill" style:transform="scaleX({pct / 100})"></div>
                 </div>
                 <span class="size-value">{formatBytes(size)}</span>
               </div>
@@ -369,7 +443,27 @@
             <DiffTreeView nodes={diffNodes} {showUnchanged} />
           {/if}
         {:else if hasProps}
-          <TreeView data={filteredProps} defaultOpen={true} />
+          <div class="props-search">
+            <input
+              type="text"
+              class="search-input"
+              placeholder="Search props..."
+              aria-label="Search props"
+              value={searchInput}
+              oninput={(e) => handleSearchInput(e.currentTarget.value)}
+            />
+            {#if searchActive}
+              <span class="search-count" class:zero={matchCount === 0}>
+                {matchCount === 0 ? 'no matches' : `${matchCount} ${matchCount === 1 ? 'match' : 'matches'}`}
+              </span>
+            {/if}
+          </div>
+          <TreeView
+            data={filteredProps}
+            defaultOpen={true}
+            searchMatches={searchResult?.matches}
+            forceExpand={searchResult?.expand}
+          />
         {:else}
           <div class="empty">No props</div>
         {/if}
@@ -440,6 +534,21 @@
     color: var(--dt-accent);
   }
 
+  /* Same look as the plain name, but an interactive button that opens source. */
+  .live-component.as-link {
+    font-family: inherit;
+    line-height: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+
+  .live-component.as-link:hover {
+    text-decoration: underline;
+  }
+
   .live-error-badge {
     font-size: 10px;
     padding: 1px 6px;
@@ -494,6 +603,12 @@
 
   details[open] > .section-title::before {
     transform: rotate(90deg);
+  }
+
+  /* Clickable disclosure — give the mouse the same feedback the other
+     controls have (it had none). */
+  .section-title:hover {
+    color: var(--dt-text);
   }
 
   .section-heading {
@@ -584,19 +699,31 @@
     gap: 4px;
   }
 
+  /*
+   * Tinted background with the accent as TEXT, not white text on the accent.
+   * White on the lighter accents was ~1.9:1 (yellow) to ~2.5:1 — nowhere near
+   * AA, and feature badges are a headline feature. The accent already meets
+   * contrast against the panel background (that is what the tokens were tuned
+   * for), so using it as the foreground inherits a ratio that passes instead
+   * of inventing a new pairing that does not.
+   */
   .feature-badge {
     font-size: 10px;
     font-weight: 600;
-    padding: 2px 7px;
+    padding: 2px 8px;
     border-radius: 3px;
-    background: var(--badge-color);
-    color: oklch(1 0 0);
+    background: color-mix(in oklch, var(--badge-color) 16%, transparent);
+    border: 1px solid color-mix(in oklch, var(--badge-color) 38%, transparent);
+    color: var(--badge-color);
     text-transform: uppercase;
-    letter-spacing: 0.03em;
+    letter-spacing: 0.05em;
     white-space: nowrap;
-    border: none;
     font-family: inherit;
     cursor: pointer;
+  }
+
+  .feature-badge:hover {
+    background: color-mix(in oklch, var(--badge-color) 24%, transparent);
   }
 
   .feature-badge.expanded {
@@ -681,7 +808,7 @@
   }
 
   .toggle-btn.active {
-    background: var(--dt-accent);
+    background: var(--dt-accent-surface);
     color: white;
   }
 
@@ -722,6 +849,55 @@
     font-style: italic;
   }
 
+  /* --- Props search --- */
+  .props-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .search-input {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-family: inherit;
+    border: 1px solid var(--dt-border);
+    border-radius: 4px;
+    background: var(--dt-bg);
+    color: var(--dt-text);
+    outline: none;
+  }
+
+  /* Keyboard focus stays visible; a mouse click does not draw a ring. */
+  .search-input:focus-visible {
+    outline: 2px solid var(--dt-accent);
+    outline-offset: -1px;
+    border-color: var(--dt-accent);
+  }
+
+  .search-input::placeholder {
+    color: var(--dt-text-muted);
+  }
+
+  .search-input:focus {
+    border-color: var(--dt-accent);
+  }
+
+  .search-count {
+    font-size: 11px;
+    color: var(--dt-text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .search-count.zero {
+    font-style: italic;
+  }
+
   /* --- Size breakdown --- */
   .size-breakdown {
     padding: 4px 0 8px;
@@ -755,7 +931,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 10.5px;
+    font-size: 11px;
   }
 
   .size-bar-track {
@@ -769,10 +945,14 @@
 
   .size-bar-fill {
     height: 100%;
+    width: 100%;
     background: var(--dt-accent);
     border-radius: 2px;
-    min-width: 1px;
-    transition: width 0.2s;
+    /* scaleX (composited) rather than animating width, which triggers layout
+       on every data change. transform-origin keeps the fill growing from the
+       left edge, matching the old width-based bar. */
+    transform-origin: left;
+    transition: transform 0.2s;
   }
 
   .size-value {

@@ -31,6 +31,29 @@ export function formatScalar(val: unknown, maxLen = 30): string {
 }
 
 /**
+ * Render a flash/error bag entry as readable text.
+ *
+ * Adapters put arrays and nested bags in these maps as often as plain strings
+ * (`errors.email` is `["is invalid", "is taken"]` in several backends), and
+ * interpolating those directly renders `a,b` or `[object Object]` — losing the
+ * very messages the row exists to show. Strings pass through untouched so the
+ * common case gains no quotes.
+ */
+export function displayValue(val: unknown): string {
+  if (typeof val === 'string') return val
+  if (val === null || val === undefined) return String(val)
+  if (Array.isArray(val)) return val.map((entry) => displayValue(entry)).join(', ')
+  if (typeof val === 'object') {
+    try {
+      return JSON.stringify(val)
+    } catch {
+      return String(val)
+    }
+  }
+  return String(val)
+}
+
+/**
  * Format a value for inline preview in tree nodes.
  * Shows a compact representation including nested keys for objects.
  */

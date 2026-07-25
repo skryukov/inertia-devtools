@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatScalar, inlineValue, jsonByteSize, formatBytes } from './format'
+import { formatScalar, inlineValue, jsonByteSize, formatBytes, displayValue } from './format'
 
 describe('formatScalar', () => {
   it('formats null', () => {
@@ -134,5 +134,34 @@ describe('formatBytes', () => {
 
   it('formats megabytes', () => {
     expect(formatBytes(1024 * 1024)).toBe('1.0 MB')
+  })
+})
+
+describe('displayValue', () => {
+  it('passes strings through without adding quotes', () => {
+    expect(displayValue('is required')).toBe('is required')
+  })
+
+  it('joins an array of messages readably instead of rendering "a,b"', () => {
+    // Several adapters send errors.email as a list of messages.
+    expect(displayValue(['is invalid', 'is taken'])).toBe('is invalid, is taken')
+  })
+
+  it('serializes a nested bag instead of rendering "[object Object]"', () => {
+    expect(displayValue({ nested: 'deep' })).toBe('{"nested":"deep"}')
+    expect(displayValue({ nested: 'deep' })).not.toContain('[object Object]')
+  })
+
+  it('renders null, undefined, numbers and booleans', () => {
+    expect(displayValue(null)).toBe('null')
+    expect(displayValue(undefined)).toBe('undefined')
+    expect(displayValue(3)).toBe('3')
+    expect(displayValue(false)).toBe('false')
+  })
+
+  it('falls back to String() when a value will not serialize', () => {
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    expect(() => displayValue(cyclic)).not.toThrow()
   })
 })

@@ -1,7 +1,29 @@
-import type { DevToolsStore } from '../core/store'
+import type { StoreClient } from '../core/client'
 import type { DevToolsOptions } from '../core/types'
+import type { DevToolsContext } from './stores.svelte'
 
-export function mountDevTools(shadow: ShadowRoot, store: DevToolsStore, options: DevToolsOptions): void {
+/** Optional props forwarded to the Svelte app (see DevToolsApp.svelte). */
+export interface DevToolsAppProps {
+  /** Reuse an existing reactive context instead of creating one (PiP window). */
+  sharedCtx?: DevToolsContext
+  /** Render as a Picture-in-Picture window: panel only, filling the document. */
+  pip?: boolean
+  /** Nonce forwarded to styles injected later (e.g. into the PiP window). */
+  styleNonce?: string
+}
+
+/**
+ * Returns a teardown for the mounted app. Used to return void and drop the
+ * unmount function `mountSvelteApp` hands back, which made
+ * `destroyInertiaDevtools()` a half-teardown: capture stopped, but the shadow
+ * host, the trigger icon, the document keydown listener and the store
+ * subscription all stayed. Re-initialising then produced a second set of each.
+ */
+export async function mountDevTools(
+  shadow: ShadowRoot,
+  client: StoreClient,
+  options: DevToolsOptions,
+): Promise<() => void> {
   // Inject base styles
   const style = document.createElement('style')
   if (options.styleNonce) {
@@ -16,18 +38,28 @@ export function mountDevTools(shadow: ShadowRoot, store: DevToolsStore, options:
   shadow.appendChild(container)
 
   // Mount Svelte app
-  mountSvelteApp(container, store, options)
+  const unmount = await mountSvelteApp(container, client, { styleNonce: options.styleNonce })
+  return () => {
+    unmount?.()
+    style.remove()
+    container.remove()
+  }
 }
 
-async function mountSvelteApp(target: HTMLElement, store: DevToolsStore, _options: DevToolsOptions): Promise<void> {
+export async function mountSvelteApp(
+  target: HTMLElement,
+  client: StoreClient,
+  appProps: DevToolsAppProps = {},
+): Promise<(() => void) | undefined> {
   try {
-    const { mount } = await import('svelte')
+    const { mount, unmount } = await import('svelte')
     const { default: DevToolsApp } = await import('./DevToolsApp.svelte')
 
-    mount(DevToolsApp, {
+    const app = mount(DevToolsApp, {
       target,
-      props: { store },
+      props: { client, ...appProps },
     })
+    return () => unmount(app)
   } catch (err) {
     // Fallback: show error message in shadow DOM
     target.innerHTML = `
@@ -44,12 +76,19 @@ async function mountSvelteApp(target: HTMLElement, store: DevToolsStore, _option
       console.error(err)
       console.groupEnd()
     }
+    return undefined
   }
 }
 
-function getBaseStyles(): string {
+/**
+ * Base styles for the devtools UI. Scoped to `:host` for the docked
+ * Shadow DOM shell, or `:root` when injected into a document the
+ * devtools own outright (the PiP window).
+ */
+export function getBaseStyles(scope: ':host' | ':root' = ':host'): string {
+  const lightScope = scope === ':host' ? ':host([data-theme="light"])' : ':root[data-theme="light"]'
   return `
-    :host {
+    ${scope} {
       /* Base surface colors */
       --dt-bg: oklch(0.21 0.006 286);
       --dt-bg-card: oklch(0.274 0.006 286);
@@ -57,19 +96,56 @@ function getBaseStyles(): string {
       --dt-text: oklch(0.985 0 0);
       --dt-text-muted: oklch(0.716 0.013 286);
 
-      /* Accent — Inertia brand #2563EB */
-      --dt-accent: oklch(0.546 0.215 264);
+      /*
+       * Accent — Inertia brand #2563EB, lifted from L=0.546 to L=0.670. The
+       * brand hex is only 2.87:1 on --dt-bg-card, failing AA text (4.5:1) AND
+       * the 3:1 non-text bar — so it was invalid even as the focus-ring colour
+       * on card surfaces. L=0.670 clears 4.57:1 on card / 4.9:1 on bg.
+       *
+       * This bright shade is for accent used AS text/lines (links, labels,
+       * focus ring, data bars). Filled controls that carry WHITE label text
+       * need the opposite — white on L=0.670 is only 3.13:1 — so they use
+       * --dt-accent-surface below (L=0.546, white-on-it = 5.18:1). One token
+       * cannot do both on a dark surface: legible-as-text wants bright, legible
+       * -under-white wants dark, and those L ranges do not overlap.
+       */
+      --dt-accent: oklch(0.67 0.19 264);
+      --dt-accent-surface: oklch(0.546 0.215 264);
 
-      /* Semantic colors */
+      /*
+       * Semantic colors. red/blue/purple lifted so value text (tree keys,
+       * numbers, error labels) clears AA 4.5:1 on --dt-bg-card, not just on the
+       * darker --dt-bg. green/cyan/amber/etc already clear it here in dark.
+       */
       --dt-green: oklch(0.723 0.191 149);
-      --dt-red: oklch(0.627 0.222 25);
-      --dt-blue: oklch(0.623 0.185 259);
-      --dt-purple: oklch(0.627 0.225 303);
+      --dt-red: oklch(0.69 0.2 25);
+      --dt-blue: oklch(0.655 0.17 259);
+      --dt-purple: oklch(0.68 0.21 303);
       --dt-amber: oklch(0.769 0.171 70);
       --dt-cyan: oklch(0.715 0.127 207);
       --dt-teal: oklch(0.704 0.119 182);
       --dt-emerald: oklch(0.696 0.17 162);
       --dt-yellow: oklch(0.795 0.184 86);
+
+      /*
+       * Semantic aliases. These were REFERENCED and never defined, so every
+       * var(--dt-success|warning|error) fell through to a hardcoded hex
+       * fallback that bypassed light-theme tuning entirely (#f59e0b on white is
+       * about 2.2:1). Declared once: both scopes target the same host element,
+       * so the light block's redefinition of --dt-green et al. flows through.
+       */
+      --dt-success: var(--dt-green);
+      --dt-warning: var(--dt-amber);
+      --dt-error: var(--dt-red);
+
+      /*
+       * One step dimmer than --dt-text-muted, for explanatory notes. It had no
+       * definition and no fallback, so the text simply INHERITED its parent
+       * colour and rendered at full strength — the opposite of the intent.
+       * L=0.65 measures 5.47:1 on --dt-bg and 4.72:1 on --dt-bg-card, so it
+       * clears AA on both surfaces. The light theme overrides it below.
+       */
+      --dt-text-dim: oklch(0.65 0.013 286);
 
       /* Opacity-based state colors — swap overlay base per theme */
       --dt-overlay: 1 0 0; /* white in dark mode */
@@ -77,31 +153,42 @@ function getBaseStyles(): string {
       --dt-row-added: oklch(0.723 0.191 149 / 0.08);
       --dt-row-removed: oklch(0.627 0.222 25 / 0.08);
       --dt-row-changed: oklch(0.795 0.184 86 / 0.08);
-
-      font-family: system-ui, -apple-system, sans-serif;
-      font-size: 13px;
-      line-height: 1.4;
-      color: var(--dt-text);
     }
 
-    :host([data-theme="light"]) {
+    ${lightScope} {
       --dt-bg: oklch(1 0 0);
       --dt-bg-card: oklch(0.967 0.003 286);
       --dt-border: oklch(0.92 0.004 286);
       --dt-text: oklch(0.205 0.006 286);
-      --dt-text-muted: oklch(0.552 0.016 286);
+      /* L=0.542, not 0.552: at 0.552 muted measured 4.39:1 on the lighter
+       * --dt-bg-card, under AA. 0.542 clears 4.57:1 on card / 5.04:1 on bg. */
+      --dt-text-muted: oklch(0.542 0.016 286);
 
       --dt-accent: oklch(0.488 0.217 264);
+      /* Light surfaces are light, so the L=0.488 accent already clears both
+       * white-on-it (6.7:1) and accent-as-text on card (6.1:1) — no split
+       * needed; surface == accent here, kept only for token parity. */
+      --dt-accent-surface: oklch(0.488 0.217 264);
 
-      --dt-green: oklch(0.56 0.175 149);
+      /* green/amber/cyan lowered in L so value text clears AA 4.5:1 on the
+       * lighter --dt-bg-card (darker = more contrast on a light surface). */
+      --dt-green: oklch(0.515 0.175 149);
       --dt-red: oklch(0.535 0.22 25);
       --dt-blue: oklch(0.488 0.217 264);
       --dt-purple: oklch(0.494 0.23 303);
-      --dt-amber: oklch(0.606 0.165 70);
-      --dt-cyan: oklch(0.547 0.12 207);
-      --dt-teal: oklch(0.536 0.112 182);
-      --dt-emerald: oklch(0.528 0.155 162);
+      --dt-amber: oklch(0.545 0.165 70);
+      --dt-cyan: oklch(0.515 0.12 207);
+      --dt-teal: oklch(0.52 0.112 182);
+      --dt-emerald: oklch(0.51 0.155 162);
       --dt-yellow: oklch(0.636 0.165 86);
+
+      /*
+       * Equal to --dt-text-muted on purpose. In a light theme "dimmer" means
+       * lighter, which lowers contrast, and there is no headroom to spend below
+       * AA — so dim matches muted rather than going lighter. Tracks muted's
+       * L=0.542 so it clears AA on --dt-bg-card too (4.57:1), not just on bg.
+       */
+      --dt-text-dim: oklch(0.542 0.016 286);
 
       --dt-overlay: 0 0 0; /* black in light mode */
       --dt-hover: oklch(var(--dt-overlay) / 0.04);
@@ -112,6 +199,18 @@ function getBaseStyles(): string {
 
     *, *::before, *::after {
       box-sizing: border-box;
+    }
+
+    /*
+     * Keyboard focus was invisible: nothing in the UI defined :focus-visible and
+     * the two search inputs actively removed the UA ring. A keyboard user had no
+     * idea where focus sat. One accent ring for everything focusable, keyed off
+     * :focus-visible so a mouse click never draws one. 2px meets the 3:1
+     * non-text contrast bar even where --dt-accent is dim as body text.
+     */
+    :focus-visible {
+      outline: 2px solid var(--dt-accent);
+      outline-offset: 1px;
     }
 
     /* Thin scrollbars — standard property (Firefox, Chrome 121+) */
@@ -136,8 +235,63 @@ function getBaseStyles(): string {
       background: var(--dt-text-muted);
     }
 
+    /*
+     * Typography and the inheritance reset live HERE, on the mount container
+     * inside the shadow tree — NOT on the shadow host. Shadow isolation is
+     * one-directional and, worse, per CSS Scoping L1 section 3.3 a normal
+     * declaration in the outer tree that matches the host element WINS over a
+     * host-scoped rule for inherited properties. So a host app rule like
+     * "div { direction: rtl }" (the host element IS a div) beat a host-scoped
+     * "direction: ltr" reset and rendered the whole panel right-to-left;
+     * "text-transform: uppercase" on body SHOUTED every label. An element inside
+     * the shadow tree is unreachable from the outer tree, so the reset holds —
+     * and stays a NORMAL declaration, so components can still set their own
+     * font-weight/white-space without fighting !important.
+     */
     #inertia-devtools-root {
       pointer-events: auto;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      line-height: 1.4;
+      color: var(--dt-text);
+      direction: ltr;
+      text-align: left;
+      letter-spacing: normal;
+      word-spacing: normal;
+      text-transform: none;
+      text-indent: 0;
+      font-weight: 400;
+      font-style: normal;
+      font-variant: normal;
+      white-space: normal;
+      text-shadow: none;
+      list-style: none;
+      visibility: visible;
+      cursor: auto;
+    }
+
+    /*
+     * One global rule instead of a per-component opt-in. There was a
+     * reduced-motion block in TriggerIcon that named '.trigger, .trigger.active'
+     * — but the animated classes are '.trigger.pulse' and an infinite 'orbit',
+     * so it covered neither, and PageView's infinite '.live-dot' pulse had no
+     * block at all. Two of six animations honoured the preference.
+     *
+     * !important is deliberate: Svelte's scoped styles carry an attribute
+     * selector, so anything less loses on specificity — which is exactly how
+     * the old rule was defeated. This is the canonical accessibility pattern.
+     * A near-zero duration rather than 'none' so animationend still fires and
+     * nothing waiting on it hangs.
+     */
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
     }
   `
 }

@@ -7,10 +7,15 @@ import type {
   DevToolsState,
   DevToolsOptions,
   DocsProvider,
+  NetworkCaptureMode,
   SessionRequestSummary,
+  WireRequestData,
+  WireResponseData,
 } from './types'
 import type { NetworkTiming } from './network'
 import { saveSession, loadSession, clearSession } from './session'
+import { TOO_DEEP } from './utils'
+import { REDACTED, isSensitiveKey } from './redact'
 
 const MAX_CLONE_DEPTH = 10
 
@@ -29,6 +34,10 @@ export class DevToolsStore {
   private options: DevToolsOptions
   private previousSession: ReturnType<typeof loadSession> = null
   private saveTimer: ReturnType<typeof setTimeout> | undefined
+  /** Raw page reference → its deep clone, so byte-identical pages clone once. */
+  private pageCloneCache = new WeakMap<object, object>()
+  private networkCaptureMode: NetworkCaptureMode = 'pending'
+  private legacyInertiaWarned = false
 
   constructor(options: DevToolsOptions = {}) {
     this.options = options
@@ -58,6 +67,11 @@ export class DevToolsStore {
     return this.options.docsProvider ?? 'inertiajs'
   }
 
+  /** True only when the Vite plugin mounted its source-open endpoint (dev). */
+  get sourceLinks(): boolean {
+    return this.options.sourceLinks === true
+  }
+
   isInertiaRequestUrl(url: string): boolean {
     return this.correlator.hasRequestWithUrl(url)
   }
@@ -70,11 +84,17 @@ export class DevToolsStore {
     return this.previousSession?.requests ?? []
   }
 
+  /** Router actions (replay/reload) are available — a router was provided. */
+  get canAct(): boolean {
+    return this.options.router != null
+  }
+
   getState(): DevToolsState {
     return {
       requests: this.requests,
       currentPage: this.currentPage,
       evictedCount: this.evictedCount,
+      networkCaptureMode: this.networkCaptureMode,
       tick: this.tick,
     }
   }
@@ -93,18 +113,25 @@ export class DevToolsStore {
 
   /**
    * Capture a DOM event (inertia:*).
-   * Called by capture.ts event handlers.
+   * Called by capture.ts event handlers, one microtask after dispatch — the
+   * timestamp is passed in from capture time, and defaultPrevented is final
+   * here because every document listener has already run.
    */
-  captureEvent(name: InertiaEventName, event: Event): void {
+  captureEvent(name: InertiaEventName, event: Event, timestamp = performance.now()): void {
     if (!(event instanceof CustomEvent)) return
     const rawDetail = event.detail
     const detail = this.safeSerializeDetail(rawDetail)
 
+    this.warnOnceOnLegacyInertia(detail)
+
     const captured: CapturedEvent = {
       id: this.nextEventId++,
       name,
-      timestamp: performance.now(),
+      timestamp,
       detail,
+    }
+    if (name === 'inertia:before' && event.defaultPrevented) {
+      captured.prevented = true
     }
 
     this.correlator.processEvent(captured)
@@ -113,20 +140,36 @@ export class DevToolsStore {
 
   /**
    * Capture a network timing entry (from PerformanceObserver) and correlate it.
+   * Unmatched entries are buffered inside the correlator and drained on finish,
+   * which notifies on its own — no need to re-render for a buffered miss.
    */
   captureNetworkTiming(timing: NetworkTiming): void {
-    this.correlator.linkNetworkTiming(timing)
+    if (this.correlator.linkNetworkTiming(timing)) {
+      this.notify()
+    }
+  }
+
+  // --- Wire data (interceptors) ---
+
+  setNetworkCaptureMode(mode: NetworkCaptureMode): void {
+    if (this.networkCaptureMode === mode) return
+    this.networkCaptureMode = mode
     this.notify()
   }
 
   /**
-   * Capture a client-side visit (detected via history API monkey-patch).
-   * These are router.push/replace/replaceProp/appendToProp/prependToProp calls
-   * that change page state without making an HTTP request.
+   * Attach request wire data (from the request interceptor) by Inertia visit UUID.
+   * No notify: these run synchronously inside the host app's request chain, and
+   * lifecycle events that always follow (finish/success/prefetched/httpException)
+   * notify on their own — the wire data rides that re-render.
    */
-  captureClientVisit(method: 'push' | 'replace', page: InertiaPage, previousPage: InertiaPage): void {
-    this.correlator.processClientVisit(method, page, previousPage)
-    this.notify()
+  attachWireRequest(inertiaVisitId: string, request: WireRequestData): void {
+    this.correlator.attachWireRequest(inertiaVisitId, request)
+  }
+
+  /** Attach response wire data (from the response interceptor) by Inertia visit UUID. */
+  attachWireResponse(inertiaVisitId: string, response: WireResponseData): void {
+    this.correlator.attachWireResponse(inertiaVisitId, response)
   }
 
   // --- Subscription ---
@@ -148,22 +191,106 @@ export class DevToolsStore {
     this.notify()
   }
 
+  /**
+   * Re-issue a captured visit through the app's router. GET only — replaying
+   * a mutation would re-submit it, so non-GET records are silently refused
+   * (the UI gates too; this guard is the safety net). No-ops without a
+   * router or a matching record.
+   */
+  replayVisit(visitId: number): void {
+    const router = this.options.router
+    if (!router) return
+    const record = this.correlator.getRequest(visitId)
+    if (!record) return
+    if (record.method.toUpperCase() !== 'GET') return
+    try {
+      router.visit(record.url, {
+        method: record.method.toLowerCase(),
+        only: record.only,
+        except: record.except,
+        headers: undefined,
+      })
+    } catch (e) {
+      console.warn('[inertia-devtools] Replay failed:', e)
+    }
+  }
+
+  /** Reload the current page through the app's router. No-ops without a router. */
+  reload(): void {
+    const router = this.options.router
+    if (!router) return
+    try {
+      router.reload({})
+    } catch (e) {
+      console.warn('[inertia-devtools] Reload failed:', e)
+    }
+  }
+
+  /**
+   * Flush the debounced session save immediately. Called on pagehide —
+   * a 409/inertia:location hard reload lands inside the debounce window,
+   * which would otherwise lose exactly the record that explains the reload.
+   */
+  flushPendingSave(): void {
+    if (this.saveTimer === undefined) return
+    clearTimeout(this.saveTimer)
+    this.saveTimer = undefined
+    saveSession(this.requests)
+  }
+
   // --- Internal ---
+
+  /**
+   * Correlation requires the visit UUID introduced in Inertia 3.4.
+   * A visit-carrying event without one means the app runs an older Inertia —
+   * warn once and point at the legacy devtools line.
+   */
+  private warnOnceOnLegacyInertia(detail: Record<string, unknown>): void {
+    if (this.legacyInertiaWarned) return
+    const visit = detail.visit
+    if (visit == null || typeof visit !== 'object') return
+    if (typeof (visit as Record<string, unknown>).id === 'string') return
+
+    this.legacyInertiaWarned = true
+    console.warn(
+      '[inertia-devtools] Inertia events carry no visit id — request correlation will be unreliable. ' +
+        'This version supports Inertia >= 3.4 (for v2 / v3.0–3.3 use inertia-devtools@0.1); ' +
+        'on a newer Inertia, check for an inertia-devtools update.',
+    )
+  }
 
   private notify(): void {
     this.tick++
-    const state = this.getState()
-    for (const fn of this.subscribers) {
-      try {
-        fn(state)
-      } catch (e) {
-        console.warn('[inertia-devtools] Subscriber error:', e)
+
+    // Build the snapshot ONLY when something is listening. getState() shallow-
+    // copies the whole 200-record buffer, and it ran on every captured event
+    // even with zero subscribers — a single file upload fires ~1000 progress
+    // notifications, so that was 1000 full-buffer copies thrown away before the
+    // panel was ever opened.
+    if (this.subscribers.size > 0) {
+      const state = this.getState()
+      for (const fn of this.subscribers) {
+        try {
+          fn(state)
+        } catch (e) {
+          console.warn('[inertia-devtools] Subscriber error:', e)
+        }
       }
     }
 
     // Debounced save to sessionStorage
     clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => saveSession(this.requests), 1000)
+  }
+
+  /**
+   * Cancel the pending debounced session write. Called on teardown so a timer
+   * scheduled by the last notify() cannot fire after the store is gone and
+   * overwrite the persisted session with data from a destroyed instance.
+   */
+  dispose(): void {
+    clearTimeout(this.saveTimer)
+    this.saveTimer = undefined
   }
 
   /**
@@ -176,6 +303,34 @@ export class DevToolsStore {
     try {
       const result: Record<string, unknown> = {}
       for (const [key, value] of Object.entries(detail as Record<string, unknown>)) {
+        // Page objects are server JSON (acyclic, no functions): native
+        // structuredClone copies them at full depth and is cheaper than the
+        // recursive walk — this runs synchronously at navigation commit, and
+        // the depth cap would otherwise truncate deep props (see TOO_DEEP).
+        if (key === 'page' && value != null && typeof value === 'object') {
+          // Dedupe by identity. beforeUpdate/navigate/success each carry a page
+          // and each was structuredCloned independently — but navigate and
+          // success carry the SAME object (both read the router's current
+          // `this.page`), so one of the three deep copies per navigation was
+          // pure waste, and each retained its own megabytes. Inertia REPLACES
+          // `this.page` on every setPage (`this.page = p`) rather than mutating
+          // in place, so a shared reference can never carry stale content —
+          // verified against core 3.4.0. The cache is a WeakMap, so a clone is
+          // released the moment Inertia drops the raw page it keys on.
+          const cachedClone = this.pageCloneCache.get(value as object)
+          if (cachedClone !== undefined) {
+            result[key] = cachedClone
+            continue
+          }
+          try {
+            const cloned = structuredClone(value)
+            this.pageCloneCache.set(value as object, cloned)
+            result[key] = cloned
+            continue
+          } catch {
+            // Non-cloneable value snuck in — fall through to the safe walk
+          }
+        }
         result[key] = this.safeClone(value)
       }
       return result
@@ -187,7 +342,7 @@ export class DevToolsStore {
   private safeClone(value: unknown, depth = MAX_CLONE_DEPTH): unknown {
     if (value == null || typeof value !== 'object') return value
 
-    if (depth <= 0) return '[too deep]'
+    if (depth <= 0) return TOO_DEEP
 
     // URL objects
     if (value instanceof URL) return value.toString()
@@ -209,7 +364,12 @@ export class DevToolsStore {
         // Skip functions and circular-prone properties
         if (typeof v === 'function') continue
         if (k === 'cancelToken' || k === 'signal') continue
-        result[k] = this.safeClone(v, depth - 1)
+        // Visit details carry the request body and headers verbatim, so the
+        // raw events are a third route for credentials into the export
+        // (alongside visitOptions and wire). Masking during the existing walk
+        // costs no extra traversal. `page` takes the structuredClone fast path
+        // above and is deliberately untouched — server props are the product.
+        result[k] = isSensitiveKey(k) ? REDACTED : this.safeClone(v, depth - 1)
       }
       return result
     } catch {

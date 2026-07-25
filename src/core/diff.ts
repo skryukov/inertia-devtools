@@ -3,6 +3,8 @@
  * Returns a tree of DiffNode entries describing what changed.
  */
 
+import { TOO_DEEP } from './utils'
+
 export type DiffType = 'added' | 'removed' | 'changed' | 'unchanged' | 'nested'
 
 export interface DiffNode {
@@ -69,6 +71,13 @@ export function diffProps(
  * Recurses into plain objects and arrays.
  */
 function diffValues(key: string, oldVal: unknown, newVal: unknown): DiffNode {
+  // Depth-truncated captures are unknowable: two '[too deep]' sentinels
+  // comparing equal must never report "unchanged" — surface them as changed
+  // so the truncation is visible instead of silently wrong.
+  if (oldVal === TOO_DEEP || newVal === TOO_DEEP) {
+    return { type: 'changed', key, oldValue: oldVal, newValue: newVal }
+  }
+
   if (isPlainObject(oldVal) && isPlainObject(newVal)) {
     const children = diffProps(oldVal as Record<string, unknown>, newVal as Record<string, unknown>)
     const hasChanges = children.some((c) => c.type !== 'unchanged')

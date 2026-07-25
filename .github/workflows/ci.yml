@@ -4,27 +4,76 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: [20, 22]
 
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v6
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 22
           cache: npm
 
       - run: npm ci
-      - run: npm run lint
       - run: npm run format:check
+      - run: npm run lint
       - run: npm run typecheck
+      # tsc silently ignores .svelte files, so `strict: true` said nothing
+      # about roughly half the source. svelte-check is what actually gates it.
+      - run: npm run check:svelte
+      # CSS custom properties fail silently: an undefined var() falls through to
+      # its fallback, or inherits. Four shipped that way.
+      - run: npm run check:css
       - run: npm test
+      # Builds AND gates the build's own output: svelte-check reports zero
+      # warnings while the compiler emits its own through the Vite build, and
+      # nothing used to read that. Replaces a bare `npm run build`.
+      - run: npm run check:build
+
+  # Catches breakage in the @internal Inertia APIs we depend on
+  # when new @inertiajs/core versions ship.
+  inertia-compat:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        inertia: ['3.4.0', 'latest']
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm install --no-save @inertiajs/core@${{ matrix.inertia }}
+      - run: npm run typecheck && npm test
+
+  # Drives the real playground (a protocol-accurate fake Inertia server) in a
+  # real browser and asserts the built devtools UI — the coverage the unit
+  # suite's synthetic CustomEvents can't give. This is what makes the compat
+  # matrix mean something: a protocol/event-shape drift fails here, not silently.
+  e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      # The playground serves the devtools from the repo's built dist/, so it
+      # must exist before the browser loads the panel.
       - run: npm run build
+      - run: npm --prefix playground install
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e

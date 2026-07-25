@@ -21,3 +21,6 @@ export const ICON_SUN = `<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2=
 
 /** Chevron-down / dropdown arrow */
 export const ICON_CHEVRON_DOWN = `<path d="M7 10l5 5 5-5z"/>`
+
+/** Pop-out / picture-in-picture icon (lucide "picture-in-picture-2") */
+export const ICON_PIP = `<path d="M21 9V6a2 2 0 00-2-2H4a2 2 0 00-2 2v10a2 2 0 002 2h4"/><rect x="12" y="13" width="10" height="7" rx="2"/>`

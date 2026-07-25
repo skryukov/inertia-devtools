@@ -12,12 +12,16 @@ export interface CapturedEvent {
   name: InertiaEventName
   timestamp: number // performance.now()
   detail: Record<string, unknown>
+  /** inertia:before only: a listener called preventDefault(), so the visit never started. */
+  prevented?: boolean
+  /** Attached via the most-recent-in-flight fallback — the event carries no visit id, so attribution is a guess. */
+  heuristic?: boolean
 }
 
 /**
  * Visit type classification.
  */
-export type VisitType = 'full' | 'partial' | 'prefetch' | 'deferred' | 'redirect' | 'client'
+export type VisitType = 'full' | 'partial' | 'prefetch' | 'deferred' | 'redirect' | 'client' | 'poll'
 
 /**
  * Active Inertia feature detected on a request.
@@ -34,6 +38,7 @@ export interface ActiveFeature {
     | 'encrypted'
     | 'clear-history'
     | 'prefetch'
+    | 'poll'
     | 'flash'
     | 'remember'
     | 'cached'
@@ -46,12 +51,20 @@ export interface ActiveFeature {
  */
 export interface RequestRecord {
   visitId: number
+  /** Inertia's own visit UUID (visit.id / detail.visitId), when the event carried one. */
+  inertiaVisitId?: string
   parentVisitId?: number
   type: VisitType
   method: string
   url: string
   only?: string[]
   except?: string[]
+  /** Served from the prefetch cache (navigate fired with cached: true). */
+  cached?: boolean
+  /** An inertia:before listener called preventDefault() — the visit never started. */
+  prevented?: boolean
+  /** Synthetic record for the initial full-page load (navigate with no prior page state). */
+  initial?: boolean
   status?: number
   startedAt: number
   finishedAt?: number
@@ -59,16 +72,65 @@ export interface RequestRecord {
   page?: InertiaPage
   previousPage?: InertiaPage
   events: CapturedEvent[]
+  /**
+   * Events dropped once `events` hit its cap. Progress events go first — the
+   * Events tab already groups them — so the structural timeline survives.
+   * Undefined means nothing was dropped.
+   */
+  droppedEvents?: number
   features: ActiveFeature[]
   cancelled: boolean
   interrupted: boolean
   completed: boolean
   error?: unknown
+  /**
+   * The response never merged: HTTP exception or network error. Distinct from
+   * `error`, which also holds validation errors — those visits DID merge
+   * (Inertia fires inertia:error for any page whose merged props carry errors,
+   * including partial reloads that merely carried them over).
+   */
+  failed?: boolean
   redirectUrl?: string
   visitOptions?: Record<string, unknown>
   diagnostics: Diagnostic[]
   network?: NetworkTiming
+  wire?: WireData
 }
+
+/** Request wire data captured via Inertia's dev-mode interceptors. */
+export interface WireRequestData {
+  method: string
+  url: string
+  headers: Record<string, string>
+  /** When the request interceptor fired (just before send) — later than the record's before-event startedAt. */
+  startedAt: number
+}
+
+/**
+ * Response wire data. Captured via the response interceptor for Inertia
+ * responses; prefetch responses and HTTP exceptions bypass the interceptor
+ * and are extracted from the inertia:prefetched / inertia:httpException events.
+ */
+export interface WireResponseData {
+  status?: number
+  headers: Record<string, string>
+  bodySize?: number
+  finishedAt: number
+}
+
+/** Actual request/response data from the wire (vs reconstructed client-side). */
+export interface WireData {
+  request?: WireRequestData
+  response?: WireResponseData
+}
+
+/**
+ * How network data is being captured.
+ * - 'pending': interceptor availability not yet determined (no events seen)
+ * - 'interceptors': subscribed to window.__inertia_interceptors__ (full wire data)
+ * - 'fallback': interceptors unavailable (app sets dev: false) — PerformanceObserver timing only
+ */
+export type NetworkCaptureMode = 'pending' | 'interceptors' | 'fallback'
 
 /** Severity level for inline diagnostics */
 export type DiagnosticSeverity = 'warning' | 'error' | 'info'
@@ -89,6 +151,7 @@ export interface DevToolsState {
   requests: RequestRecord[]
   currentPage: InertiaPage | null
   evictedCount: number
+  networkCaptureMode: NetworkCaptureMode
   /** Monotonically increasing counter; changes on every state update. */
   tick: number
 }
@@ -114,6 +177,15 @@ export interface SessionRequestSummary {
   completed: boolean
   cancelled: boolean
   interrupted: boolean
+  /**
+   * A request that never got a usable response — network error, or an HTTP
+   * error with no Inertia body. Absent here meant a restored 409/network-error
+   * row lost the one flag that colours it red, so it came back from a hard
+   * reload looking like a clean success.
+   */
+  failed?: boolean
+  prevented?: boolean
+  initial?: boolean
   only?: string[]
   except?: string[]
   redirectUrl?: string
@@ -140,13 +212,47 @@ export interface SessionSnapshot {
 export type DocsProvider = 'inertiajs' | 'inertia-rails'
 
 /**
+ * Minimal duck type for the app's Inertia router. The devtools cannot import
+ * @inertiajs/core at runtime (peer dependency — importing it would bundle a
+ * second copy with its own state), so actions only rely on this shape.
+ */
+export interface InertiaRouterLike {
+  visit(url: string, options?: Record<string, unknown>): void
+  reload(options?: Record<string, unknown>): void
+}
+
+/**
  * Options for initializing the devtools.
  */
 export interface DevToolsOptions {
-  /** CSP nonce for inline styles in Shadow DOM */
+  /**
+   * CSP nonce applied to the devtools' base stylesheet (the design tokens in
+   * the shadow root, and the popup document in PiP mode).
+   *
+   * It does NOT cover per-component styles: those are injected at runtime by
+   * Svelte's `append_styles`, which sets no nonce and offers no hook for one,
+   * and a nonce assigned after insertion does not retroactively satisfy CSP.
+   * So under a strict `style-src 'nonce-...'` with no `unsafe-inline`, the
+   * panel renders structurally but unstyled and the host app's report-uri
+   * collects violations it did not cause. Fixing that properly means emitting
+   * component CSS as an asset and injecting it ourselves.
+   */
   styleNonce?: string
   /** Override to disable even in dev mode */
   enabled?: boolean
   /** Documentation site for feature links. Default: 'inertiajs' */
   docsProvider?: DocsProvider
+  /**
+   * Whether the panel may open a component's source file in the editor. This is
+   * a capability flag the UI reads: the Vite plugin sets it to `true` only when
+   * its dev-server open endpoint is actually mounted. Not meant to be set by
+   * hand — the plugin's richer `sourceLinks` option controls it. Default: off.
+   */
+  sourceLinks?: boolean
+  /**
+   * The app's own Inertia router — enables devtools actions (replay a visit,
+   * reload). Injected automatically by the Vite plugin; manual-import users
+   * may pass `router` from @inertiajs/core themselves.
+   */
+  router?: InertiaRouterLike
 }

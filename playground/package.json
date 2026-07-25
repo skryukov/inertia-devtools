@@ -1,0 +1,17 @@
+{
+  "name": "inertia-devtools-playground",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@inertiajs/react": "^3.6.0",
+    "inertia-devtools": "file:..",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

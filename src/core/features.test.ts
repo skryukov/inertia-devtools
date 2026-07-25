@@ -127,6 +127,11 @@ describe('extractFeatures', () => {
     expect(features.find((f) => f.type === 'prefetch')).toMatchObject({ label: 'PREFETCH' })
   })
 
+  it('detects poll (Inertia >= 3.6)', () => {
+    const features = extractFeatures(makeRecord({ type: 'poll' }), makePage())
+    expect(features.find((f) => f.type === 'poll')).toMatchObject({ label: 'POLL' })
+  })
+
   it('detects flash data', () => {
     const page = makePage({ flash: { success: 'Saved!' } })
     const features = extractFeatures(makeRecord(), page)
@@ -141,31 +146,21 @@ describe('extractFeatures', () => {
     expect(features.find((f) => f.type === 'flash')).toBeUndefined()
   })
 
-  it('detects cached prefetch (no inertia:start event)', () => {
+  it('detects cache-served visits (record.cached from navigate cached: true)', () => {
     const record = makeRecord({
       type: 'full',
       startedAt: 100,
-      events: [{ id: 1, name: 'inertia:finish', timestamp: 200, detail: {} }],
+      cached: true,
     })
     const features = extractFeatures(record, makePage())
     expect(features.find((f) => f.type === 'cached')).toMatchObject({ label: 'CACHED' })
   })
 
-  it('does not detect cached when inertia:start is present', () => {
+  it('does not detect cached when the record is not flagged', () => {
     const record = makeRecord({
       type: 'full',
       startedAt: 100,
-      events: [{ id: 1, name: 'inertia:start', timestamp: 100, detail: {} }],
-    })
-    const features = extractFeatures(record, makePage())
-    expect(features.find((f) => f.type === 'cached')).toBeUndefined()
-  })
-
-  it('does not detect cached for client visits', () => {
-    const record = makeRecord({
-      type: 'client',
-      startedAt: 100,
-      events: [],
+      events: [{ id: 1, name: 'inertia:finish', timestamp: 200, detail: {} }],
     })
     const features = extractFeatures(record, makePage())
     expect(features.find((f) => f.type === 'cached')).toBeUndefined()

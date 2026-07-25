@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { DevToolsContext } from '../stores.svelte'
-  import { requestToMarkdown } from '../../core/markdown'
+  import { requestToMarkdown, eventsToMarkdown, networkToMarkdown, requestToJSON } from '../../core/markdown'
   import { copyToClipboard } from '../shared/clipboard'
+  import { openComponentSource } from '../shared/source-link'
   import { ICON_COPY, ICON_CLOSE } from '../shared/icons'
   import PageView from './PageView.svelte'
   import EventsTab from './EventsTab.svelte'
@@ -14,11 +15,86 @@
   let showRaw = $state(false)
   let toast = $state<string | null>(null)
   let toastTimeout: ReturnType<typeof setTimeout> | undefined
+  let replaying = $state(false)
+  let replayTimeout: ReturnType<typeof setTimeout> | undefined
 
-  function handleCopy() {
+  // Each tab copies its own view of the request as markdown
+  const copySource = $derived.by(() => {
+    if (ctx.activeTab === 'events') return { title: 'Copy events as Markdown', format: eventsToMarkdown }
+    if (ctx.activeTab === 'network') return { title: 'Copy network as Markdown', format: networkToMarkdown }
+    return { title: 'Copy request as Markdown', format: requestToMarkdown }
+  })
+
+  // Replay is GET-only: re-issuing a mutation would re-submit it. Client-side
+  // visits (router.push/replace) have no request to replay. The store guards
+  // non-GET again — this gate is for the affordance.
+  const canReplay = $derived(
+    ctx.canAct && ctx.selectedRequest?.method === 'GET' && ctx.selectedRequest?.type !== 'client',
+  )
+  const replayTitle = $derived.by(() => {
+    if (ctx.selectedRequest?.type === 'client') return 'Client-side visits have no request to replay'
+    if (ctx.selectedRequest && ctx.selectedRequest.method !== 'GET')
+      return 'Replaying non-GET requests is not supported (would re-submit the mutation)'
+    return 'Replay this visit'
+  })
+
+  function handleReplay() {
+    // `replaying` guards a double-submit: replaying a GET re-issues a real
+    // request against the host app, so a rapid second click would fire it
+    // twice. The button also disables for this window, but guard here too so a
+    // programmatic/keyboard repeat cannot slip past the visual state.
+    if (!ctx.selectedRequest || !canReplay || replaying) return
+    replaying = true
+    ctx.replayVisit(ctx.selectedRequest.visitId)
+    showToast('Replaying...')
+    // Brief cooldown — long enough to cover an accidental second click and a
+    // fast round-trip. There is no completion signal to key off, so this is a
+    // time-based guard, not a precise in-flight tracker.
+    clearTimeout(replayTimeout)
+    replayTimeout = setTimeout(() => {
+      replaying = false
+    }, 1500)
+  }
+
+  async function handleCopy() {
     if (!ctx.selectedRequest) return
-    copyToClipboard(requestToMarkdown(ctx.selectedRequest))
-    showToast('Copied!')
+    const ok = await copyToClipboard(copySource.format(ctx.selectedRequest))
+    // Say what happened. Clipboard writes fail on non-secure origins and from
+    // the unfocused PiP window, and claiming success there sends someone off
+    // to paste nothing.
+    showToast(ok ? 'Copied!' : 'Copy failed — clipboard unavailable')
+  }
+
+  async function handleCopyJSON() {
+    if (!ctx.selectedRequest) return
+    const ok = await copyToClipboard(requestToJSON(ctx.selectedRequest))
+    showToast(ok ? 'Copied JSON!' : 'Copy failed — clipboard unavailable')
+  }
+
+  async function handleOpenSource(component: string) {
+    showToast((await openComponentSource(component)).message)
+  }
+
+  const panelId = 'dt-tabpanel'
+  const tabId = (tab: string) => `dt-tab-${tab}`
+
+  /** Roving focus: arrows move between tabs, Home/End jump to the ends. */
+  function handleTabKeydown(e: KeyboardEvent) {
+    const order: readonly string[] = tabs
+    const current = order.indexOf(ctx.activeTab)
+    let next = -1
+    if (e.key === 'ArrowRight') next = (current + 1) % order.length
+    else if (e.key === 'ArrowLeft') next = (current - 1 + order.length) % order.length
+    else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = order.length - 1
+    if (next < 0) return
+    e.preventDefault()
+    // stopPropagation so the panel-wide arrow handler does not also move the
+    // request selection while the user is walking the tab strip.
+    e.stopPropagation()
+    ctx.setActiveTab(order[next])
+    const btn = e.currentTarget as HTMLElement | null
+    btn?.parentElement?.querySelector<HTMLElement>(`#${CSS.escape(tabId(order[next]))}`)?.focus()
   }
 
   function showToast(message: string) {
@@ -33,14 +109,24 @@
 <div class="detail-pane">
   {#if ctx.selectedRequest}
     <div class="tab-bar">
+      <!--
+        The WAI-ARIA tabs PATTERN, not just its markup. role="tab" without
+        aria-controls, roving tabindex or arrow-key handling announces a tab
+        widget to a screen reader and then behaves like a row of buttons —
+        worse than plain buttons, because the promise is wrong.
+      -->
       <div class="tab-list" role="tablist">
         {#each tabs as tab (tab)}
           <button
             class="tab"
             class:active={ctx.activeTab === tab}
             role="tab"
+            id={tabId(tab)}
+            aria-controls={panelId}
             aria-selected={ctx.activeTab === tab}
+            tabindex={ctx.activeTab === tab ? 0 : -1}
             onclick={() => ctx.setActiveTab(tab)}
+            onkeydown={handleTabKeydown}
           >
             {tab.charAt(0).toUpperCase() + tab.slice(1)}
           </button>
@@ -53,7 +139,22 @@
             <button class="mode-btn" class:active={showRaw} onclick={() => (showRaw = true)}>Raw</button>
           </div>
         {/if}
-        <button class="copy-btn" onclick={handleCopy} title="Copy as markdown">
+        {#if ctx.canAct}
+          <button class="copy-btn" onclick={handleReplay} disabled={!canReplay || replaying} title={replayTitle}>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3" /></svg
+            >
+            {replaying ? 'Replaying…' : 'Replay'}
+          </button>
+        {/if}
+        <button class="copy-btn" onclick={handleCopy} title={copySource.title}>
           <svg
             width="12"
             height="12"
@@ -65,6 +166,9 @@
           >
           Copy
         </button>
+        {#if ctx.activeTab === 'props'}
+          <button class="copy-btn" onclick={handleCopyJSON} title="Copy request as JSON">JSON</button>
+        {/if}
         <button class="close-btn" onclick={() => ctx.deselectRequest()} title="Back to live view">
           <svg
             width="12"
@@ -79,7 +183,7 @@
       </div>
     </div>
 
-    <div class="tab-content" role="tabpanel">
+    <div class="tab-content" role="tabpanel" id={panelId} aria-labelledby={tabId(ctx.activeTab)} tabindex="0">
       {#if ctx.activeTab === 'props'}
         <PageView
           page={ctx.selectedRequest.page ?? null}
@@ -90,12 +194,18 @@
           type={ctx.selectedRequest.type}
           visitId={ctx.selectedRequest.visitId}
           docsProvider={ctx.docsProvider}
+          request={ctx.selectedRequest}
+          onCopied={() => showToast('Copied!')}
           {showRaw}
         />
       {:else if ctx.activeTab === 'events'}
         <EventsTab request={ctx.selectedRequest} />
       {:else if ctx.activeTab === 'network'}
-        <NetworkTab request={ctx.selectedRequest} docsProvider={ctx.docsProvider} />
+        <NetworkTab
+          request={ctx.selectedRequest}
+          captureMode={ctx.state.networkCaptureMode}
+          docsProvider={ctx.docsProvider}
+        />
       {/if}
     </div>
   {:else}
@@ -107,13 +217,25 @@
         isLive={true}
         componentName={ctx.currentPage?.component}
         docsProvider={ctx.docsProvider}
+        sourceLinks={ctx.sourceLinks}
+        onOpenSource={handleOpenSource}
+        onCopied={() => showToast('Copied!')}
       />
     </div>
   {/if}
 
-  {#if toast}
-    <div class="toast">{toast}</div>
-  {/if}
+  <!--
+    role="status" + aria-live: the copy-failure toast is the ONLY feedback that
+    a clipboard write was blocked, and without a live region a screen-reader
+    user got nothing at all — the button appeared to succeed. Rendered
+    unconditionally so the region exists before the text arrives; announcing
+    into a region that is inserted at the same moment is unreliable.
+  -->
+  <div class="toast-region" role="status" aria-live="polite">
+    {#if toast}
+      <div class="toast">{toast}</div>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -181,9 +303,14 @@
     white-space: nowrap;
   }
 
-  .copy-btn:hover {
+  .copy-btn:hover:not(:disabled) {
     color: var(--dt-text);
     border-color: var(--dt-text-muted);
+  }
+
+  .copy-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .mode-toggle {
@@ -204,7 +331,7 @@
   }
 
   .mode-btn.active {
-    background: var(--dt-accent);
+    background: var(--dt-accent-surface);
     color: white;
   }
 

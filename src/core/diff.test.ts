@@ -142,3 +142,15 @@ describe('diffProps', () => {
     expect(result).toEqual([])
   })
 })
+
+describe('depth-truncated values', () => {
+  it('never reports two [too deep] sentinels as unchanged', () => {
+    const nodes = diffProps({ deep: '[too deep]' }, { deep: '[too deep]' })
+    expect(nodes[0].type).toBe('changed')
+  })
+
+  it('reports sentinel vs real value as changed', () => {
+    const nodes = diffProps({ deep: '[too deep]' }, { deep: { a: 1 } })
+    expect(nodes[0].type).toBe('changed')
+  })
+})

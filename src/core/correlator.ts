@@ -1,40 +1,68 @@
 import type { InertiaPage } from './protocol'
-import type { CapturedEvent, RequestRecord, ActiveFeature, VisitType, InertiaVisitDetail } from './types'
+import type {
+  CapturedEvent,
+  RequestRecord,
+  ActiveFeature,
+  VisitType,
+  InertiaVisitDetail,
+  WireRequestData,
+  WireResponseData,
+} from './types'
 import type { NetworkTiming } from './network'
+import { visitUuid, wireBodySize } from './wire'
+import { redactDeep, redactHeaders } from './redact'
 import { extractFeatures, extractPageFeatures } from './features'
 import { computeDiagnostics } from './diagnostics'
 import { normalizeUrl } from './url'
 
 const MAX_PENDING_NETWORK = 10
+/** Per-record event cap — see appendEvent. */
+const MAX_EVENTS_PER_RECORD = 500
+
+/**
+ * Prefetch before-events awaiting their start. A page using `prefetch="mount"`
+ * on a list fires all of them at once, so 20 was far too low: the overflow was
+ * FIFO-dropped and those visits then had no record at all — no row, no trace.
+ * Entries are tiny and drained on start; this only has to survive one burst.
+ */
+const MAX_PENDING_PREFETCH = 200
 const NETWORK_TIMING_TOLERANCE_MS = 2000
+
+/**
+ * How long a cache-fresh prefetch entry, or an in-flight record, can sit before
+ * it is treated as never coming back. Generous: real requests can be slow, and
+ * discarding a live one costs a row.
+ */
+const STALE_IN_FLIGHT_MS = 60_000
 
 /**
  * Correlates individual Inertia events into logical RequestRecords.
  *
- * Strategy:
- * - `before`/`start`/`finish` carry event.detail.visit with matching properties
- *   → use visit fingerprint (url + method + only + deferredProps) for correlation
- * - Other events (navigate, success, etc.) → correlate via "active visit ID"
- * - Prefetch visits: `inertia:before` fires even for cache hits (no real request).
- *   We defer record creation until `inertia:start` to avoid phantom records.
- *
- * Note: Inertia creates NEW visit objects for each event dispatch (before/start/finish
- * have different object references), so identity-based WeakMap correlation won't work.
+ * Correlation strategy (requires Inertia >= 3.4):
+ * - Every visit carries a UUID (`visit.id`). Events carrying the visit object
+ *   (`before`/`start`/`finish`/`prefetching`/`prefetched`) and events carrying a
+ *   top-level `visitId` (`navigate`/`success`/`error`/`clientVisit`) resolve to
+ *   records by exact id match.
+ * - Events with no id at all (`progress`, `beforeUpdate`, `flash`,
+ *   `httpException`, `networkError`) fall back to the most recently started
+ *   in-flight record. `flash` additionally falls back to the most recent record
+ *   overall, because `router.flash()` fires with no visit in flight.
+ *   Fallback-attributed events are flagged `heuristic` so the UI can mark them.
+ * - Prefetch visits: `inertia:before` fires even when the prefetch cache is
+ *   still fresh (no request follows). Record creation is deferred until
+ *   `inertia:start` confirms a real request went out.
+ * - Cache-served clicks (`navigate` with `cached: true`) never receive
+ *   `start`/`finish` — they are finalized when `navigate` arrives.
  */
 export class Correlator {
   private nextVisitId = 1
   private records: Map<number, RequestRecord> = new Map()
   private sortedRecords: RequestRecord[] = []
   private maxRecords: number
-  /**
-   * Maps visit fingerprint → queue of visit IDs.
-   * A queue handles concurrent requests with the same fingerprint (rare but possible).
-   * FIFO: before pushes to back, finish shifts from front.
-   */
-  private fingerprintMap: Map<string, number[]> = new Map()
-  /** Most recent prefetch before-event awaiting confirmation (inertia:start). Cache hits never get start. */
-  private pendingPrefetch: { event: CapturedEvent; timestamp: number; url: string; fingerprint: string } | null = null
-  private activeVisitId: number | null = null
+  /** Inertia visit UUID → devtools record id. */
+  private uuidMap: Map<string, number> = new Map()
+  /** Prefetch before-events awaiting confirmation (inertia:start), keyed by visit UUID. */
+  private pendingPrefetch: Map<string, { event: CapturedEvent; timestamp: number }> = new Map()
   private lastPage: InertiaPage | null = null
   /** Buffer of unmatched network timing entries for late correlation. */
   private pendingNetwork: NetworkTiming[] = []
@@ -49,6 +77,22 @@ export class Correlator {
    * Returns the affected RequestRecord, or null if correlation failed.
    */
   processEvent(event: CapturedEvent): RequestRecord | null {
+    const record = this.dispatchEvent(event)
+    // The single funnel. Diagnostics used to be recomputed at each handler's
+    // own discretion, and `handleClientVisit` was the one handler that never
+    // did on either of its paths — so a `router.replace()` visit was inserted
+    // with `diagnostics: []` and stayed that way, which made
+    // `detectHistoryReplace`'s first branch unreachable in production despite
+    // being covered by a unit test.
+    //
+    // Recomputing on every event rather than at chosen moments also means a
+    // rule can never be missed because a handler forgot; `computeDiagnostics`
+    // is pure, so a redundant run costs time and nothing else.
+    if (record) record.diagnostics = computeDiagnostics(record)
+    return record
+  }
+
+  private dispatchEvent(event: CapturedEvent): RequestRecord | null {
     const { name, detail, timestamp } = event
 
     switch (name) {
@@ -61,14 +105,14 @@ export class Correlator {
       case 'inertia:finish':
         return this.handleFinish(event, detail, timestamp)
 
-      case 'inertia:cancel': // v2 only
-        return this.handleCancel(event)
-
       case 'inertia:navigate':
         return this.handleNavigate(event, detail)
 
       case 'inertia:beforeUpdate':
         return this.handleBeforeUpdate(event, detail)
+
+      case 'inertia:clientVisit':
+        return this.handleClientVisit(event, detail)
 
       default:
         return this.handleGenericEvent(event, detail)
@@ -99,49 +143,42 @@ export class Correlator {
     return false
   }
 
-  /**
-   * Process a client-side visit detected by history API interception.
-   * Creates a new RequestRecord of type 'client' with the page diff.
-   */
-  processClientVisit(method: 'push' | 'replace', page: InertiaPage, previousPage: InertiaPage): RequestRecord {
-    const visitId = this.nextVisitId++
-    const now = performance.now()
-
-    const record: RequestRecord = {
-      visitId,
-      type: 'client',
-      method: method === 'push' ? 'PUSH' : 'REPLACE',
-      url: page.url ?? '/',
-      startedAt: now,
-      finishedAt: now,
-      duration: 0,
-      events: [],
-      features: this.extractPageFeatures(page),
-      diagnostics: [],
-      cancelled: false,
-      interrupted: false,
-      completed: true,
-      page,
-      previousPage,
-    }
-
-    this.insertRecord(record)
-    this.lastPage = page
-    this.activeVisitId = visitId
-
-    return record
-  }
-
   clear(): void {
     this.records.clear()
     this.sortedRecords = []
-    this.fingerprintMap.clear()
-    this.pendingPrefetch = null
+    this.uuidMap.clear()
+    this.pendingPrefetch.clear()
     this.pendingNetwork = []
     this._evictedCount = 0
-    this.activeVisitId = null
     this.nextVisitId = 1
     // Note: lastPage is NOT cleared -- it represents the current app state
+  }
+
+  /**
+   * Attach request wire data (from the request interceptor) by Inertia visit UUID.
+   * The interceptor fires inside Request.send(), after the before/start events
+   * created the record — a miss means the record was evicted; drop silently.
+   */
+  attachWireRequest(uuid: string, request: WireRequestData): RequestRecord | null {
+    const record = this.resolveByUuid(uuid)
+    if (!record) return null
+    record.wire = { ...record.wire, request: { ...request, headers: redactHeaders(request.headers) } }
+    return record
+  }
+
+  /** Attach response wire data (from the response interceptor) by Inertia visit UUID. */
+  attachWireResponse(uuid: string, response: WireResponseData): RequestRecord | null {
+    const record = this.resolveByUuid(uuid)
+    if (!record) return null
+    record.wire = { ...record.wire, response: { ...response, headers: redactHeaders(response.headers) } }
+    if (record.status === undefined && response.status !== undefined) {
+      record.status = response.status
+      // Recompute: several rules key off status, so learning it late has to
+      // re-run them. Without this a 409 seen only by the interceptor produced
+      // no version-mismatch diagnostic. attachNetworkTiming already does this.
+      record.diagnostics = computeDiagnostics(record)
+    }
+    return record
   }
 
   /**
@@ -151,7 +188,7 @@ export class Correlator {
   linkNetworkTiming(timing: NetworkTiming): RequestRecord | null {
     const match = this.findNetworkMatch(timing)
     if (match) {
-      match.network = timing
+      this.attachNetworkTiming(match, timing)
       return match
     }
 
@@ -171,22 +208,48 @@ export class Correlator {
     for (let i = this.pendingNetwork.length - 1; i >= 0; i--) {
       const net = this.pendingNetwork[i]
       if (this.networkMatchesVisit(net, record)) {
-        record.network = net
+        this.attachNetworkTiming(record, net)
         this.pendingNetwork.splice(i, 1)
         return
       }
     }
   }
 
+  /**
+   * Attach a Resource Timing entry, using its status as a fallback for
+   * responses no interceptor reports (non-Inertia errors, dev: false apps). On Inertia
+   * 3.4/3.5 a 409 hard reload fires no event at all — this is its only trace.
+   */
+  private attachNetworkTiming(record: RequestRecord, timing: NetworkTiming): void {
+    record.network = timing
+    if (record.status === undefined && timing.responseStatus !== undefined) {
+      record.status = timing.responseStatus
+      record.diagnostics = computeDiagnostics(record)
+    }
+  }
+
   private findNetworkMatch(timing: NetworkTiming): RequestRecord | null {
+    // CLOSEST start wins, not newest-first.
+    //
+    // The window is ±2000ms and `router.poll(1000)` produces a run of records
+    // sharing one URL, so several are eligible at once. Returning the first hit
+    // scanning backwards meant a timing that arrived late attached to the newest
+    // eligible record rather than the one it actually belonged to — wrong
+    // duration and wrong Server-Timing on both records, and the true owner then
+    // had none at all.
+    let best: RequestRecord | null = null
+    let bestDelta = Infinity
     for (let i = this.sortedRecords.length - 1; i >= 0; i--) {
       const req = this.sortedRecords[i]
       if (req.network) continue
-      if (this.networkMatchesVisit(timing, req)) {
-        return req
+      if (!this.networkMatchesVisit(timing, req)) continue
+      const delta = Math.abs(timing.startedAt - req.startedAt)
+      if (delta < bestDelta) {
+        best = req
+        bestDelta = delta
       }
     }
-    return null
+    return best
   }
 
   private networkMatchesVisit(timing: NetworkTiming, req: RequestRecord): boolean {
@@ -205,12 +268,30 @@ export class Correlator {
 
   private handleBefore(event: CapturedEvent, detail: Record<string, unknown>, timestamp: number): RequestRecord | null {
     const visit = this.extractVisit(detail)
-    const fingerprint = this.visitFingerprint(visit)
+    const uuid = visitUuid(visit)
 
-    // Prefetch visits: inertia:before fires even for cache hits (no real request).
-    // Defer record creation until inertia:start confirms a real request was made.
-    if (visit && visit.prefetch) {
-      this.pendingPrefetch = { event, timestamp, url: this.extractUrl(visit), fingerprint }
+    // Prefetch visits: inertia:before fires even when the cache is still fresh
+    // (no request follows). Defer record creation until inertia:start confirms
+    // a real request. Keyed by UUID so concurrent prefetches don't clobber each
+    // other. Prevented prefetches never get a start — record them right away.
+    if (!event.prevented && visit?.prefetch && uuid) {
+      this.pendingPrefetch.set(uuid, { event, timestamp })
+      // Expire by age, not only by count. This map drains on `inertia:start`,
+      // which a cache-fresh prefetch NEVER fires — so those entries had exactly
+      // one exit: being pushed out by the size cap. Raising that cap 20 -> 200
+      // to stop a `prefetch="mount"` list dropping rows therefore raised the
+      // permanent retention tenfold. Age-based expiry is the actual drain the
+      // cache-hit path was missing.
+      if (this.pendingPrefetch.size > 1) {
+        for (const [key, entry] of this.pendingPrefetch) {
+          if (timestamp - entry.timestamp > STALE_IN_FLIGHT_MS) this.pendingPrefetch.delete(key)
+          else break // insertion-ordered: the first live entry ends the run
+        }
+      }
+      if (this.pendingPrefetch.size > MAX_PENDING_PREFETCH) {
+        const oldest = this.pendingPrefetch.keys().next().value
+        if (oldest !== undefined) this.pendingPrefetch.delete(oldest)
+      }
       return null
     }
 
@@ -233,6 +314,7 @@ export class Correlator {
 
     const record: RequestRecord = {
       visitId,
+      inertiaVisitId: uuid,
       parentVisitId,
       type: isDeferred ? 'deferred' : this.classifyVisitType(visit),
       method,
@@ -250,51 +332,137 @@ export class Correlator {
       visitOptions,
     }
 
-    this.insertRecord(record)
-
-    // Store fingerprint → visitId for correlation with start/finish events
-    this.pushFingerprint(fingerprint, visitId)
-
-    // Deferred requests are background reloads — they must NOT steal
-    // activeVisitId from the parent visit, which still needs to receive
-    // navigate/beforeUpdate events that fire after deferred starts.
-    // On initial page load, deferred before-events fire BEFORE navigate,
-    // so activeVisitId must stay null to let navigate create the initial record.
-    if (!isDeferred) {
-      this.activeVisitId = visitId
+    // A listener called preventDefault(): the router bails out before start,
+    // so nothing would ever finalize this record. Finalize it here — a visit
+    // the app blocked is signal, not an in-flight phantom. (Visits rejected by
+    // an onBefore() callback returning false never fire the DOM event at all
+    // and are invisible to devtools by design.)
+    if (event.prevented) {
+      record.prevented = true
+      record.finishedAt = timestamp
+      record.duration = 0
     }
+
+    this.insertRecord(record)
+    if (uuid) {
+      this.finalizeSupersededVisit(uuid, url, timestamp)
+      this.uuidMap.set(uuid, visitId)
+    }
+
     return record
+  }
+
+  /**
+   * Inertia reuses a visit id when it follows an `x-inertia-redirect`:
+   * `handleNonInertiaResponse` calls `router.visit(target, {...requestParams.all()})`,
+   * and `getPendingVisit` spreads those options AFTER `id: createVisitId()`, so
+   * the original id wins (3.4.0 dist:3452-3459). Two records then claim one uuid.
+   *
+   * Left alone the first record never finishes: its `finish` is routed to the
+   * second, `resolveInFlight` keeps handing it every id-less event (progress,
+   * httpException, networkError, flash), and `evictOldest` *prefers* finished
+   * records, so the zombie outlives everything while its `events` array grows.
+   *
+   * Finalizing it here is also the truthful reading — the server did redirect
+   * that request — so the row reads as a redirect instead of hanging in flight.
+   */
+  private finalizeSupersededVisit(uuid: string, nextUrl: string, timestamp: number): void {
+    const previousId = this.uuidMap.get(uuid)
+    if (previousId === undefined) return
+    const previous = this.records.get(previousId)
+    if (!previous || previous.finishedAt != null) return
+
+    previous.finishedAt = timestamp
+    previous.duration = timestamp - previous.startedAt
+    previous.completed = true
+    if (!previous.page) {
+      previous.type = 'redirect'
+      previous.redirectUrl ??= nextUrl
+    }
+    previous.diagnostics = computeDiagnostics(previous)
   }
 
   private handleStart(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
-    // Check if this is a pending prefetch visit (deferred from handleBefore).
-    // before → start fire in rapid succession for the same visit.
     const visit = this.extractVisit(detail)
-    if (this.pendingPrefetch && visit) {
-      const fingerprint = this.visitFingerprint(visit)
-      if (fingerprint === this.pendingPrefetch.fingerprint) {
-        const pending = this.pendingPrefetch
-        this.pendingPrefetch = null
-        return this.createPrefetchRecord(visit, pending.event, event, pending.timestamp)
+    const uuid = visitUuid(visit)
+
+    // Pending prefetch confirmed: a real request went out (cache hits never get start).
+    if (uuid && visit) {
+      const pending = this.pendingPrefetch.get(uuid)
+      if (pending) {
+        this.pendingPrefetch.delete(uuid)
+        return this.createPrefetchRecord(visit, uuid, pending.event, event, pending.timestamp)
       }
     }
 
-    const record = this.resolveByFingerprint(event) ?? this.resolveByActiveId()
+    // Explicit ids resolve exactly or not at all; the in-flight fallback only
+    // serves genuinely id-less (pre-3.4) payloads.
+    const record = uuid ? this.resolveByUuid(uuid) : this.resolveInFlight()
     if (record) {
-      record.events.push(event)
+      if (!uuid) event.heuristic = true
+      this.appendEvent(record, event)
     }
     return record
   }
 
+  /**
+   * The finish that belongs to a visit whose id was reused by an
+   * `x-inertia-redirect`, or null if this finish is for the current holder of
+   * the uuid.
+   *
+   * `router.visit()` for the redirect runs synchronously — through the
+   * successor's before/start — BEFORE the original request's
+   * `.finally(() => finish())` fires, and `uuidMap` now points at the successor.
+   * So the original's finish resolves by uuid to the SUCCESSOR, which is still
+   * in flight, and marked it completed then dropped its own beforeUpdate.
+   *
+   * The finish event carries the ORIGINAL visit object, so its URL still names
+   * the original request. When that URL doesn't match the record the uuid now
+   * resolves to, the finish belongs to the earlier record —
+   * `finalizeSupersededVisit` already finished it, so the event is appended
+   * there and the successor is left in flight. (A redirect back to the SAME URL
+   * cannot be told apart this way; it self-heals when the successor's own finish
+   * lands.)
+   */
+  private supersededOriginalForFinish(
+    uuid: string | undefined,
+    visit: InertiaVisitDetail | null | undefined,
+    holder: RequestRecord,
+  ): RequestRecord | null {
+    if (!uuid || !visit || holder.finishedAt != null) return null
+    const finishUrl = this.extractUrl(visit)
+    if (!finishUrl || normalizeUrl(finishUrl) === normalizeUrl(holder.url)) return null
+
+    const path = normalizeUrl(finishUrl)
+    for (let i = this.sortedRecords.length - 1; i >= 0; i--) {
+      const r = this.sortedRecords[i]
+      if (r !== holder && r.inertiaVisitId === uuid && r.finishedAt != null && normalizeUrl(r.url) === path) {
+        return r
+      }
+    }
+    // The predecessor was evicted — still must not finalize the successor.
+    return holder
+  }
+
   private handleFinish(event: CapturedEvent, detail: Record<string, unknown>, timestamp: number): RequestRecord | null {
-    const record = this.resolveByFingerprint(event) ?? this.resolveByActiveId()
+    const visit = this.extractVisit(detail)
+    const uuid = visitUuid(visit)
+    const record = uuid ? this.resolveByUuid(uuid) : this.resolveInFlight()
     if (!record) return null
 
-    record.events.push(event)
+    // A stale finish from an id-reused predecessor: attribute it to the earlier
+    // record if it still exists, and never touch the in-flight successor.
+    const superseded = this.supersededOriginalForFinish(uuid, visit, record)
+    if (superseded) {
+      if (superseded !== record) this.appendEvent(superseded, event)
+      return superseded === record ? null : superseded
+    }
+
+    if (!uuid) event.heuristic = true
+    this.appendEvent(record, event)
     record.finishedAt = timestamp
     record.duration = timestamp - record.startedAt
 
-    const visit = this.extractVisit(detail)
     if (visit) {
       record.completed = !!visit.completed
       record.cancelled = !!visit.cancelled
@@ -306,9 +474,8 @@ export class Correlator {
       this.drainPendingNetwork(record)
     }
 
-    // Deferred requests don't receive navigate/beforeUpdate events (those go to
-    // the parent visit). By finish time, lastPage has been updated with the merged
-    // props, so we capture it here for the props diff view.
+    // Deferred requests may not have page data yet (navigate carries the merged
+    // page, but by finish time lastPage holds the merged props either way).
     if (record.type === 'deferred') {
       if (!record.page && this.lastPage) {
         record.page = this.lastPage
@@ -323,39 +490,46 @@ export class Correlator {
       }
     }
 
-    record.diagnostics = computeDiagnostics(record)
-
-    return record
-  }
-
-  private handleCancel(event: CapturedEvent): RequestRecord | null {
-    const record = this.resolveByFingerprint(event) ?? this.resolveByActiveId()
-    if (!record) return null
-
-    record.events.push(event)
-    record.cancelled = true
     return record
   }
 
   private handleNavigate(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
     const page = detail.page as InertiaPage | undefined
+    const visitId = typeof detail.visitId === 'string' ? detail.visitId : undefined
 
-    // Update global page state
+    // Snapshot the pre-navigate page state before updating it — synthetic
+    // records created below need it as their diff baseline.
+    const previousPage = this.lastPage ?? undefined
     if (page) {
       this.lastPage = page
     }
 
-    let record = this.resolveByActiveId()
+    // Exact match by visit UUID; for id-less navigates (history restores), fall
+    // back to the most recent in-flight record that can actually receive a
+    // navigate: deferred reloads' navigates always carry their own id in 3.4,
+    // and prefetch requests never receive a navigate at all.
+    let record = this.resolveByUuid(visitId)
+    if (!record && !visitId) {
+      record = this.resolveInFlight({ excludeDeferred: true, excludePrefetch: true })
+      if (record) event.heuristic = true
+    }
 
-    // Initial page load: navigate fires with no preceding before/start
+    // No matching visit: the initial page load, a history restore, or the
+    // navigate that router.push() fires just before its clientVisit event
+    // (handleClientVisit converts the record when that follows).
     if (!record && page) {
-      const visitId = this.nextVisitId++
+      const recordId = this.nextVisitId++
       record = {
-        visitId,
+        visitId: recordId,
+        inertiaVisitId: visitId,
         type: 'full',
         method: 'GET',
         url: page.url ?? '/',
-        startedAt: 0,
+        // True initial load (no prior page state) keeps the startedAt-0 marker
+        // and the initial flag; mid-session synthetic records (history
+        // restores) use real timestamps so they sort correctly.
+        startedAt: previousPage ? event.timestamp : 0,
+        initial: previousPage ? undefined : true,
         finishedAt: event.timestamp,
         duration: 0,
         events: [],
@@ -365,55 +539,66 @@ export class Correlator {
         interrupted: false,
         completed: true,
         page,
+        previousPage,
       }
       this.insertRecord(record)
-      this.activeVisitId = visitId
+      if (visitId) this.uuidMap.set(visitId, recordId)
 
       // On initial page load, deferred before-events may have fired before
       // this navigate event. Link orphaned deferred records to this parent
       // and set their previousPage to the initial page state.
-      for (const r of this.records.values()) {
-        if (r.type === 'deferred' && r.parentVisitId === undefined) {
-          r.parentVisitId = visitId
-          r.previousPage = page
+      //
+      // Guarded to that initial load, which the comment always claimed but the
+      // code never checked: every back/forward navigation also produces a
+      // synthetic record (popstate fires with a fresh unknown uid), so this
+      // adopted long-finished deferred records mid-session, gave them a parent
+      // that started after they did, and overwrote their diff baseline.
+      if (record.initial) {
+        for (const r of this.records.values()) {
+          if (r.type === 'deferred' && r.parentVisitId === undefined) {
+            r.parentVisitId = recordId
+            r.previousPage = page
+          }
         }
       }
     }
 
     if (!record) return null
 
-    record.events.push(event)
+    this.appendEvent(record, event)
+
+    // navigate fires with cached: true when the page was served from the
+    // prefetch cache — such visits never receive start/finish.
+    if (detail.cached === true) {
+      record.cached = true
+    }
 
     if (page) {
       record.page = page
       record.features = extractFeatures(record, page)
     }
 
-    // Navigate means the page transition is complete. For prefetch cache hits,
-    // inertia:start/finish never fire (no XHR), so finalize the record here.
+    // Navigate means the page transition is complete. For cache-served visits,
+    // inertia:start/finish never fire (no request), so finalize the record here.
     if (!record.finishedAt) {
       record.finishedAt = event.timestamp
       record.duration = event.timestamp - record.startedAt
       record.completed = true
     }
 
-    record.diagnostics = computeDiagnostics(record)
-
     return record
   }
 
   /**
-   * beforeUpdate fires before navigate and carries the page object.
-   * For POST→redirect flows, navigate never fires (replace=true),
-   * so beforeUpdate is the only source of page data.
+   * beforeUpdate fires before navigate and carries the page object (no visit id).
+   * It serves page-state bookkeeping (lastPage, deferred previousPage snapshots)
+   * and event attachment only — the record's own page comes from the exact-id
+   * navigate or success/error events.
    */
   private handleBeforeUpdate(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
-    const record = this.resolveByActiveId()
-    if (!record) return null
-
-    record.events.push(event)
-
     const page = detail.page as InertiaPage | undefined
+
+    // Page-state bookkeeping runs regardless of which record the event attaches to.
     if (page) {
       // Snapshot current lastPage as previousPage for all pending deferred records
       // BEFORE updating lastPage. This ensures each deferred record's previousPage
@@ -427,33 +612,133 @@ export class Correlator {
       }
 
       this.lastPage = page
-
-      // Only set page on the record if navigate hasn't already set it.
-      // For normal visits, navigate fires after beforeUpdate and takes precedence.
-      // For POST→redirect, navigate never fires — beforeUpdate is the only source.
-      if (!record.page) {
-        record.page = page
-        record.features = extractFeatures(record, page)
-      }
     }
+
+    // beforeUpdate carries no visit id. Attach to the in-flight non-deferred,
+    // non-poll record — deferred records receive their page via their own
+    // id-carrying navigate (or at finish).
+    //
+    // Polls are excluded for the same reason prefetches are: a `router.poll()`
+    // tick that starts mid-navigation is the NEWEST in-flight record, so it
+    // stole the user's click visit's beforeUpdate. A poll is background traffic
+    // the user did not initiate; if a click is also in flight, the beforeUpdate
+    // almost certainly belongs to the click.
+    const record =
+      this.resolveInFlight({ excludeDeferred: true, excludePoll: true }) ??
+      this.resolveInFlight({ excludeDeferred: true })
+    if (!record) return null
+
+    event.heuristic = true
+    this.appendEvent(record, event)
+
+    // Deliberately do NOT set record.page here: attribution is a guess, and
+    // with two concurrent async visits this beforeUpdate can belong to a
+    // different visit than the newest in-flight record — pinning its page on
+    // the wrong record would stick (replace visits never get a correcting
+    // navigate). The page arrives via an exact-id event instead: navigate, or
+    // success/error for replace flows where navigate never fires.
+    return record
+  }
+
+  /**
+   * Client-side visit (router.push/replace/replaceProp/appendToProp/prependToProp).
+   * Fires inertia:clientVisit with { page, replace, visitId } — no HTTP request,
+   * no other lifecycle events. Creates a completed 'client' record with the page diff.
+   */
+  private handleClientVisit(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
+    const page = detail.page as InertiaPage | undefined
+    if (!page) return null
+
+    const inertiaVisitId = typeof detail.visitId === 'string' ? detail.visitId : undefined
+    const method = detail.replace === true ? 'REPLACE' : 'PUSH'
+
+    // router.push() (replace: false) fires inertia:navigate with this visit's id
+    // BEFORE inertia:clientVisit — handleNavigate already created a synthetic
+    // record for it. Convert that record in place instead of duplicating it;
+    // its previousPage (snapshotted pre-navigate) is the correct diff baseline.
+    const existing = this.resolveByUuid(inertiaVisitId)
+    if (existing) {
+      existing.type = 'client'
+      existing.method = method
+      existing.url = page.url ?? existing.url
+      this.appendEvent(existing, event)
+      existing.page = page
+      existing.features = this.extractPageFeatures(page)
+      existing.completed = true
+      if (!existing.finishedAt) {
+        existing.finishedAt = event.timestamp
+        existing.duration = 0
+      }
+      this.lastPage = page
+      return existing
+    }
+
+    const visitId = this.nextVisitId++
+
+    const record: RequestRecord = {
+      visitId,
+      inertiaVisitId,
+      type: 'client',
+      method,
+      url: page.url ?? '/',
+      startedAt: event.timestamp,
+      finishedAt: event.timestamp,
+      duration: 0,
+      events: [event],
+      features: this.extractPageFeatures(page),
+      diagnostics: [],
+      cancelled: false,
+      interrupted: false,
+      completed: true,
+      page,
+      previousPage: this.lastPage ?? undefined,
+    }
+
+    this.insertRecord(record)
+    if (inertiaVisitId) this.uuidMap.set(inertiaVisitId, visitId)
+    this.lastPage = page
 
     return record
   }
 
   private handleGenericEvent(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
-    const record = this.resolveByFingerprint(event) ?? this.resolveByActiveId()
+    const record = this.resolveEventRecord(event, detail)
     if (!record) return null
 
-    record.events.push(event)
+    this.appendEvent(record, event)
 
-    // Extract status/errors from outcome events (v2 + v3 names)
+    // success/error carry the post-swap page (page.get()) alongside an exact
+    // visitId — an authoritative page source that overwrites anything a
+    // fallback attributed. navigate (also exact-id) delivers the same page
+    // object, so last-writer-wins is harmless; for replace visits
+    // (POST→same-URL) where navigate never fires, this is the only exact-id
+    // page source.
+    if (event.name === 'inertia:success' || event.name === 'inertia:error') {
+      const page = detail.page as InertiaPage | undefined
+      if (page) {
+        record.page = page
+        record.features = extractFeatures(record, page)
+      }
+    }
+
+    // Extract status/errors from outcome events
     if (event.name === 'inertia:error') {
       record.error = detail.errors
-    } else if (event.name === 'inertia:invalid' || event.name === 'inertia:httpException') {
-      // v2: inertia:invalid, v3: inertia:httpException — both carry { response }
+    } else if (event.name === 'inertia:httpException') {
       const response = detail.response as Record<string, unknown> | undefined
+      // The visit failed whether or not the event carried a response payload —
+      // httpException is the only failure signal for non-Inertia responses
+      // (networkError covers transport failures). No page ever merged.
+      record.failed = true
       if (response) {
-        record.status = response.status as number
+        if (typeof response.status === 'number') {
+          record.status = response.status
+          record.error = `HTTP ${response.status}`
+        }
+
+        // Response interceptors fire only for Inertia responses that reach setPage — for
+        // exceptions the event payload is the only source of wire data.
+        record.wire = { ...record.wire, response: this.wireResponseFromPayload(response, event.timestamp) }
 
         // 409 means a server-initiated redirect (version mismatch or inertia_location).
         // The client will do a full page reload — no inertia:navigate fires.
@@ -465,13 +750,67 @@ export class Correlator {
           }
         }
       }
-    } else if (event.name === 'inertia:exception' || event.name === 'inertia:networkError') {
-      // v2: inertia:exception, v3: inertia:networkError — both carry { exception }
-      record.error = detail.exception
+    } else if (event.name === 'inertia:networkError') {
+      record.error = detail.error
+      record.failed = true
+    } else if (event.name === 'inertia:location') {
+      // Inertia >= 3.6: fires just before the forced full-page reload (409
+      // version mismatch or inertia_location redirect). No visit id — it
+      // reaches the still-unfinished 409 visit via the in-flight fallback,
+      // possibly after httpException already marked it, never as a new record.
+      record.type = 'redirect'
+      const url = detail.url
+      if (url instanceof URL) {
+        record.redirectUrl = url.pathname + url.search
+      } else if (typeof url === 'string') {
+        record.redirectUrl = normalizeUrl(url)
+      }
+    } else if (event.name === 'inertia:prefetched') {
+      // Prefetch responses bypass the response interceptor (handlePrefetch
+      // returns before setPage) — capture wire data from the event instead.
+      const response = detail.response as Record<string, unknown> | undefined
+      if (response && !record.wire?.response) {
+        record.wire = { ...record.wire, response: this.wireResponseFromPayload(response, event.timestamp) }
+        if (record.status === undefined && typeof response.status === 'number') {
+          record.status = response.status
+        }
+      }
     }
 
-    record.diagnostics = computeDiagnostics(record)
+    return record
+  }
 
+  /** Resolve the record an event belongs to, by id when available, by fallback otherwise. */
+  private resolveEventRecord(event: CapturedEvent, detail: Record<string, unknown>): RequestRecord | null {
+    // success/error carry a top-level visitId; prefetching/prefetched carry the visit object.
+    const visit = this.extractVisit(detail)
+    const uuid = visitUuid(visit) ?? (typeof detail.visitId === 'string' ? detail.visitId : undefined)
+
+    // An explicit id resolves exactly or not at all — attaching an id-carrying
+    // event to an unrelated record (e.g. after eviction) would be misattribution.
+    if (uuid) return this.resolveByUuid(uuid)
+
+    // Inertia sends progress, httpException, networkError and location with no
+    // visit id. Prefer a FOREGROUND visit: a prefetch or poll in flight is the
+    // newest record and used to swallow the user's real visit's failure (the
+    // prefetch row went red with the 500 while the visit that failed looked
+    // clean; 1000 upload-progress ticks landed on the prefetch). Deferred is not
+    // excluded — a deferred group can genuinely fail and needs its own error to
+    // fire `deferred-failed`.
+    //
+    // But when NOTHING foreground is in flight, fall back to the newest record
+    // even if it is a prefetch/poll: a poll tick that 500s or a hover-prefetch
+    // that drops owns its OWN id-less failure, and dropping it left the row
+    // looking successful after `finish`.
+    const inFlight = this.resolveInFlight({ excludePrefetch: true, excludePoll: true }) ?? this.resolveInFlight()
+
+    // flash can fire with no visit in flight at all (router.flash()) — fall back
+    // to the most recent record so the flash is still visible somewhere sensible.
+    const record =
+      event.name === 'inertia:flash'
+        ? (inFlight ?? this.sortedRecords[this.sortedRecords.length - 1] ?? null)
+        : inFlight
+    if (record) event.heuristic = true
     return record
   }
 
@@ -481,6 +820,7 @@ export class Correlator {
    */
   private createPrefetchRecord(
     visit: InertiaVisitDetail,
+    uuid: string,
     beforeEvent: CapturedEvent,
     startEvent: CapturedEvent,
     timestamp: number,
@@ -494,6 +834,7 @@ export class Correlator {
 
     const record: RequestRecord = {
       visitId,
+      inertiaVisitId: uuid,
       type: 'prefetch',
       method,
       url,
@@ -509,78 +850,37 @@ export class Correlator {
     }
 
     this.insertRecord(record)
-    // Store fingerprint for finish event correlation
-    const fingerprint = this.visitFingerprint(visit)
-    this.pushFingerprint(fingerprint, visitId)
-    this.activeVisitId = visitId
+    this.uuidMap.set(uuid, visitId)
     return record
   }
 
   // --- Resolution helpers ---
 
-  /**
-   * Create a visit fingerprint from event detail for correlation.
-   * Uses url + method + only + deferredProps to uniquely identify a visit.
-   */
-  private visitFingerprint(visit: InertiaVisitDetail | undefined): string {
-    if (!visit) return '(no-visit)'
-    const url = this.extractUrl(visit)
-    const method = (visit.method ?? 'GET').toUpperCase()
-    const only = JSON.stringify(visit.only ?? [])
-    const except = JSON.stringify(visit.except ?? [])
-    const deferred = visit.deferredProps ? 'd' : ''
-    const prefetch = visit.prefetch ? 'p' : ''
-    return `${url}|${method}|${only}|${except}|${deferred}|${prefetch}`
-  }
-
-  private pushFingerprint(fingerprint: string, visitId: number): void {
-    const queue = this.fingerprintMap.get(fingerprint)
-    if (queue) {
-      queue.push(visitId)
-    } else {
-      this.fingerprintMap.set(fingerprint, [visitId])
-    }
-  }
-
-  private removeFromFingerprintMap(visitId: number): void {
-    for (const [fingerprint, queue] of this.fingerprintMap) {
-      const idx = queue.indexOf(visitId)
-      if (idx !== -1) {
-        queue.splice(idx, 1)
-        if (queue.length === 0) this.fingerprintMap.delete(fingerprint)
-        return
-      }
-    }
+  private resolveByUuid(uuid: string | undefined): RequestRecord | null {
+    if (!uuid) return null
+    const visitId = this.uuidMap.get(uuid)
+    if (visitId === undefined) return null
+    return this.records.get(visitId) ?? null
   }
 
   /**
-   * Resolve a record by visit fingerprint. Uses FIFO order (first before → first start).
-   * Peeks at the front of the queue without removing; finish will clean up.
+   * Fallback for events that carry no visit id: the most recently started
+   * record that has not finished yet.
    */
-  private resolveByFingerprint(event: CapturedEvent): RequestRecord | null {
-    const visit = this.extractVisit(event.detail)
-    if (!visit) return null
-
-    const fingerprint = this.visitFingerprint(visit)
-    const queue = this.fingerprintMap.get(fingerprint)
-    if (!queue || queue.length === 0) return null
-
-    // For finish events, consume (shift) the entry since the visit is complete
-    if (event.name === 'inertia:finish') {
-      const visitId = queue.shift()!
-      if (queue.length === 0) {
-        this.fingerprintMap.delete(fingerprint)
-      }
-      return this.records.get(visitId) ?? null
+  private resolveInFlight(options?: {
+    excludeDeferred?: boolean
+    excludePrefetch?: boolean
+    excludePoll?: boolean
+  }): RequestRecord | null {
+    for (let i = this.sortedRecords.length - 1; i >= 0; i--) {
+      const r = this.sortedRecords[i]
+      if (r.finishedAt != null) continue
+      if (options?.excludeDeferred && r.type === 'deferred') continue
+      if (options?.excludePrefetch && r.type === 'prefetch') continue
+      if (options?.excludePoll && r.type === 'poll') continue
+      return r
     }
-
-    // For start and other events, peek at the first entry
-    return this.records.get(queue[0]) ?? null
-  }
-
-  private resolveByActiveId(): RequestRecord | null {
-    if (this.activeVisitId === null) return null
-    return this.records.get(this.activeVisitId) ?? null
+    return null
   }
 
   // --- Record management ---
@@ -609,23 +909,91 @@ export class Correlator {
     }
   }
 
+  /**
+   * Prefers finished records, but no longer treats an unfinished one as
+   * immortal.
+   *
+   * A visit that never finishes — a hung request, a tab backgrounded mid-flight,
+   * a connection dropped without an error event — has `finishedAt == null`
+   * forever. The old loop skipped it looking for something finished and only
+   * fell through to `shift()` when NOTHING was finished, so that one record held
+   * its slot for the life of the page and stayed eligible for the in-flight
+   * fallback, quietly collecting other visits' id-less events.
+   *
+   * An unfinished record older than the whole retained window cannot still be
+   * live, so it is evicted like any other.
+   */
   private evictOldest(): void {
+    const newest = this.sortedRecords[this.sortedRecords.length - 1]
+    const staleBefore = newest ? newest.startedAt - STALE_IN_FLIGHT_MS : -Infinity
+
+    let firstFinished = -1
     for (let i = 0; i < this.sortedRecords.length; i++) {
       const r = this.sortedRecords[i]
-      if (r.finishedAt != null) {
+      // An in-flight record this old is not coming back.
+      if (r.finishedAt == null && r.startedAt < staleBefore) {
         this.sortedRecords.splice(i, 1)
-        this.records.delete(r.visitId)
-        this.removeFromFingerprintMap(r.visitId)
-        this._evictedCount++
+        this.deleteRecord(r)
         return
       }
+      if (firstFinished === -1 && r.finishedAt != null) firstFinished = i
     }
-    // If no completed records, evict the oldest regardless
+
+    if (firstFinished !== -1) {
+      const [r] = this.sortedRecords.splice(firstFinished, 1)
+      this.deleteRecord(r)
+      return
+    }
+
+    // Everything is young and in flight — evict the oldest regardless.
     const oldest = this.sortedRecords.shift()
     if (oldest) {
-      this.records.delete(oldest.visitId)
-      this.removeFromFingerprintMap(oldest.visitId)
-      this._evictedCount++
+      this.deleteRecord(oldest)
+    }
+  }
+
+  /**
+   * Append an event, keeping the array bounded.
+   *
+   * `events` had no cap at all. Any id-less event (progress, flash,
+   * httpException, networkError, beforeUpdate) resolves to the newest in-flight
+   * record, so a visit that never finishes — a hung request, a backgrounded tab
+   * — accumulated forever: 5,001 entries after 5,000 progress ticks, each one
+   * retaining whatever its detail carried.
+   *
+   * Progress events are dropped first because the Events tab already collapses
+   * runs of them, so losing the middle of a run costs nothing the UI showed.
+   */
+  private appendEvent(record: RequestRecord, event: CapturedEvent): void {
+    record.events.push(event)
+    if (record.events.length <= MAX_EVENTS_PER_RECORD) return
+
+    const progressIndex = record.events.findIndex((e) => e.name === 'inertia:progress')
+    // Fall back to the oldest event only if there is no progress run to thin —
+    // never the one just pushed.
+    record.events.splice(progressIndex >= 0 ? progressIndex : 0, 1)
+    record.droppedEvents = (record.droppedEvents ?? 0) + 1
+  }
+
+  private deleteRecord(record: RequestRecord): void {
+    this.records.delete(record.visitId)
+    // Only unlink the uuid if it still points at THIS record. After an
+    // x-inertia-redirect two records share a uuid (Inertia reuses the id), and
+    // the map points at the newer one — deleting it while evicting the older
+    // orphaned the live record, so its own inertia:finish resolved to nothing.
+    if (record.inertiaVisitId && this.uuidMap.get(record.inertiaVisitId) === record.visitId) {
+      this.uuidMap.delete(record.inertiaVisitId)
+    }
+    this._evictedCount++
+  }
+
+  /** Build WireResponseData from an event payload's { status, data, headers }. */
+  private wireResponseFromPayload(response: Record<string, unknown>, timestamp: number): WireResponseData {
+    return {
+      status: typeof response.status === 'number' ? response.status : undefined,
+      headers: redactHeaders({ ...(response.headers as Record<string, string> | undefined) }),
+      bodySize: wireBodySize(response.data),
+      finishedAt: timestamp,
     }
   }
 
@@ -643,6 +1011,7 @@ export class Correlator {
    */
   private extractVisitOptions(visit: InertiaVisitDetail): Record<string, unknown> | undefined {
     const skip = new Set([
+      'id',
       'method',
       'url',
       'href',
@@ -655,6 +1024,7 @@ export class Correlator {
       'cancelled',
       'interrupted',
       'prefetch',
+      'poll',
     ])
     const opts: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(visit)) {
@@ -664,13 +1034,19 @@ export class Correlator {
       if (typeof v === 'object' && v !== null && !Array.isArray(v) && Object.keys(v).length === 0) continue
       opts[k] = v
     }
-    return Object.keys(opts).length > 0 ? opts : undefined
+    // `data` is the raw request body and `headers` the caller's headers — both
+    // routinely carry credentials, and both reach the clipboard via the export.
+    return Object.keys(opts).length > 0 ? (redactDeep(opts) as Record<string, unknown>) : undefined
   }
 
   // --- Classification helpers ---
 
   private classifyVisitType(visit: InertiaVisitDetail | undefined): VisitType {
     if (!visit) return 'full'
+
+    // Inertia >= 3.6 marks router.poll() traffic. Poll wins over partial —
+    // it's the distinguishing marker for the list; only/except stay captured.
+    if (visit.poll === true) return 'poll'
 
     const only = visit.only
     const except = visit.except
@@ -687,7 +1063,12 @@ export class Correlator {
     if (!visit) return '(unknown)'
     const url = visit.url
     if (url instanceof URL) return url.pathname + url.search
-    if (typeof url === 'string') return url
+    // Inertia hands us a URL instance, but events reach the correlator through
+    // the store, whose safeClone has already stringified it to an ABSOLUTE url.
+    // So this is the branch production actually takes — normalizing it keeps
+    // `url` in the same shape as `redirectUrl` and as the URL-object branch,
+    // instead of the two sitting side by side in different formats.
+    if (typeof url === 'string') return normalizeUrl(url)
     return '(unknown)'
   }
 

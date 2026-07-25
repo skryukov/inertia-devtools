@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { RequestRecord, CapturedEvent } from '../../core/types'
+  import { eventCategory, eventColor, type EventCategory } from '../shared/event-meta'
   import TreeView from '../shared/TreeView.svelte'
 
   let { request }: { request: RequestRecord } = $props()
@@ -25,8 +26,8 @@
       'inertia:start',
       'inertia:success',
       'inertia:error',
-      'inertia:invalid',
-      'inertia:exception',
+      'inertia:httpException',
+      'inertia:networkError',
       'inertia:navigate',
       'inertia:finish',
     ])
@@ -42,7 +43,7 @@
         terminal:
           short === 'success'
             ? 'success'
-            : short === 'error' || short === 'invalid' || short === 'exception'
+            : short === 'error' || short === 'httpException' || short === 'networkError'
               ? 'error'
               : undefined,
       })
@@ -69,9 +70,14 @@
       const ms = Math.round(request.finishedAt - request.startedAt)
       if (ms > 0) parts.push(ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`)
     }
-    if (request.completed) parts.push('completed')
+    // failed is checked before completed on purpose: an HTTP error is BOTH
+    // (finish runs in .finally), and reporting a request that never reached the
+    // server as "completed" is the same lie as the green dot.
+    if (request.prevented) parts.push('prevented')
     else if (request.interrupted) parts.push('interrupted')
     else if (request.cancelled) parts.push('cancelled')
+    else if (request.failed) parts.push('failed')
+    else if (request.completed) parts.push('completed')
     else parts.push('in progress')
     return parts.join(' · ')
   })
@@ -113,9 +119,15 @@
 
   let showRawEvents = $state(false)
   let expandedId = $state<number | null>(null)
+  /**
+   * Identified by the group's FIRST EVENT ID, not its position in the filtered
+   * list. An index is only stable while the list is: toggling a filter chip
+   * rebuilds `filteredGroups`, and the stored index then pointed at whichever
+   * group happened to land in that slot — so an unrelated group silently
+   * expanded and the one the user opened silently closed.
+   */
   let expandedProgressGroup = $state<number | null>(null)
 
-  type EventCategory = 'lifecycle' | 'navigation' | 'outcome' | 'other'
   let activeFilters = $state(new Set<EventCategory>(['lifecycle', 'navigation', 'outcome', 'other']))
 
   const categoryLabels: { key: EventCategory; label: string }[] = [
@@ -124,14 +136,6 @@
     { key: 'outcome', label: 'Outcome' },
     { key: 'other', label: 'Other' },
   ]
-
-  function categorizeEvent(name: string): EventCategory {
-    if (name.includes('before') || name.includes('start') || name.includes('finish')) return 'lifecycle'
-    if (name.includes('navigate') || name.includes('beforeUpdate')) return 'navigation'
-    if (name.includes('success') || name.includes('error') || name.includes('invalid') || name.includes('exception'))
-      return 'outcome'
-    return 'other'
-  }
 
   function toggleFilter(cat: EventCategory) {
     const next = new Set(activeFilters)
@@ -179,7 +183,7 @@
 
   const filteredGroups = $derived(
     groupedEvents.filter((g) => {
-      if (g.type === 'single') return activeFilters.has(categorizeEvent(g.event.name))
+      if (g.type === 'single') return activeFilters.has(eventCategory(g.event.name))
       return activeFilters.has('other') // progress is in 'other'
     }),
   )
@@ -188,17 +192,6 @@
     const first = request.events[0]?.timestamp ?? ts
     const offset = ts - first
     return `+${Math.round(offset)}ms`
-  }
-
-  function eventColor(name: string): string {
-    if (name.includes('error') || name.includes('invalid') || name.includes('exception')) return 'var(--dt-red)'
-    if (name.includes('success') || name.includes('finish')) return 'var(--dt-green)'
-    if (name.includes('before') || name.includes('start')) return 'var(--dt-blue)'
-    if (name.includes('navigate')) return 'var(--dt-accent)'
-    if (name.includes('prefetch')) return 'var(--dt-cyan)'
-    if (name.includes('cancel')) return 'var(--dt-amber)'
-    if (name.includes('progress')) return 'var(--dt-teal)'
-    return 'var(--dt-text-muted)'
   }
 
   function shortName(name: string): string {
@@ -213,8 +206,8 @@
     expandedId = expandedId === id ? null : id
   }
 
-  function toggleProgressGroup(groupIndex: number) {
-    expandedProgressGroup = expandedProgressGroup === groupIndex ? null : groupIndex
+  function toggleProgressGroup(groupKey: number) {
+    expandedProgressGroup = expandedProgressGroup === groupKey ? null : groupKey
   }
 
   function lastProgressPercent(events: CapturedEvent[]): string {
@@ -303,7 +296,12 @@
           {/if}
           <span class="event-time">{eventTime(event.timestamp)}</span>
           <span class="event-dot" style:background={eventColor(event.name)}></span>
-          <span class="event-name" style:color={eventColor(event.name)}>{shortName(event.name)}</span>
+          <span class="event-name" style:color={eventColor(event.name)}
+            >{shortName(event.name)}{#if event.heuristic}<span
+                class="heuristic-marker"
+                title="Attributed by heuristic — this event carries no visit id">~</span
+              >{/if}</span
+          >
           {#if expandable}
             <span class="detail-hint"
               >{detailKeyCount(event.detail)} {detailKeyCount(event.detail) === 1 ? 'key' : 'keys'}</span
@@ -318,24 +316,25 @@
       {/snippet}
 
       <div class="event-list">
-        {#each filteredGroups as group, groupIdx (group.type === 'single' ? group.event.id : `pg-${groupIdx}`)}
+        {#each filteredGroups as group (group.type === 'single' ? group.event.id : `pg-${group.events[0].id}`)}
           {#if group.type === 'single'}
             <div class="event-entry">
               {@render eventRow(group.event)}
             </div>
           {:else}
             {@const events = group.events}
-            {@const isExpanded = expandedProgressGroup === groupIdx}
+            {@const groupKey = group.events[0].id}
+            {@const isExpanded = expandedProgressGroup === groupKey}
             <div class="event-entry">
               <button
                 class="event-row expandable"
                 class:expanded={isExpanded}
-                onclick={() => toggleProgressGroup(groupIdx)}
+                onclick={() => toggleProgressGroup(groupKey)}
               >
                 <span class="expand-arrow" class:open={isExpanded}>{isExpanded ? '\u25BE' : '\u25B8'}</span>
                 <span class="event-time">{eventTime(events[0].timestamp)}</span>
-                <span class="event-dot" style:background={eventColor('progress')}></span>
-                <span class="event-name" style:color={eventColor('progress')}>
+                <span class="event-dot" style:background={eventColor('inertia:progress')}></span>
+                <span class="event-name" style:color={eventColor('inertia:progress')}>
                   progress <span class="progress-count">&times;{events.length}</span>
                   {#if lastProgressPercent(events)}
                     <span class="progress-pct">{lastProgressPercent(events)}</span>
@@ -495,8 +494,8 @@
   }
 
   .filter-chip.active {
-    background: var(--dt-accent);
-    border-color: var(--dt-accent);
+    background: var(--dt-accent-surface);
+    border-color: var(--dt-accent-surface);
     color: white;
   }
 
@@ -585,6 +584,14 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+  }
+
+  .heuristic-marker {
+    color: var(--dt-text-muted);
+    opacity: 0.6;
+    font-weight: 400;
+    margin-left: 1px;
+    cursor: help;
   }
 
   .progress-count {

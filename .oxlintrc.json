@@ -12,19 +12,29 @@
   },
   "overrides": [
     {
+      "files": ["src/core/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/ui/**"],
+                "message": "core is framework-agnostic — move shared logic into core and re-export from ui/shared"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["**/*.svelte"],
       "rules": {
         "typescript/no-unused-vars": "off",
         "no-unassigned-vars": "off",
         "import/no-self-import": "off"
       }
-    },
-    {
-      "files": ["src/noop.ts"],
-      "rules": {
-        "unicorn/require-module-specifiers": "off"
-      }
     }
   ],
-  "ignorePatterns": ["dist/", "node_modules/"]
+  "ignorePatterns": ["dist/", "node_modules/", "playground/"]
 }
