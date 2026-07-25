@@ -1353,6 +1353,25 @@ describe('Correlator', () => {
       expect(correlator.getRequests().find((r) => r.url === '/notifications')!.failed).toBeUndefined()
     })
 
+    it('a poll that fails on its OWN (no foreground visit in flight) is still marked failed', () => {
+      // Inverse of "a poll cannot steal": with nothing foreground in flight, the
+      // poll's own id-less networkError must reach it — otherwise the row looks
+      // clean after finish. The exclude-only fallback dropped it; the
+      // foreground-first-then-newest fallback recovers it.
+      const poll = makeVisitObject({ poll: true, url: new URL('http://localhost/notifications') })
+      correlator.processEvent(makeEvent('inertia:before', { visit: poll }, 100))
+      correlator.processEvent(makeEvent('inertia:networkError', { error: new Error('boom') }, 200))
+      expect(correlator.getRequests().find((r) => r.url === '/notifications')!.failed).toBe(true)
+    })
+
+    it('a prefetch that fails on its OWN (no foreground visit in flight) is still marked failed', () => {
+      const prefetch = makeVisitObject({ prefetch: true, url: new URL('http://localhost/next') })
+      correlator.processEvent(makeEvent('inertia:before', { visit: prefetch }, 100))
+      correlator.processEvent(makeEvent('inertia:start', { visit: prefetch }, 101))
+      correlator.processEvent(makeEvent('inertia:networkError', { error: new Error('boom') }, 200))
+      expect(correlator.getRequests().find((r) => r.url === '/next')!.failed).toBe(true)
+    })
+
     it('still delivers a failure to a deferred group — deferred is NOT excluded', () => {
       // deferred-failed depends on the networkError reaching the deferred record.
       const deferred = makeVisitObject({ url: new URL('http://localhost/stats') })
