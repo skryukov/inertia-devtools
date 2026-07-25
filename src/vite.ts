@@ -18,36 +18,85 @@ export interface InertiaDevtoolsPluginOptions extends Omit<DevToolsOptions, 'rou
   /**
    * Make component names in the panel clickable, opening their source file in
    * your editor. The plugin mounts a dev-server endpoint that maps a component
-   * name to a file under `pagesDir` and launches the editor ($EDITOR, or
-   * $INERTIA_DEVTOOLS_EDITOR).
+   * name to a file under the pages directory and launches the editor ($EDITOR,
+   * or $INERTIA_DEVTOOLS_EDITOR).
    *
-   * Resolution is contained to `pagesDir` (a `../` component name is rejected),
-   * and the feature auto-disables when `pagesDir` does not exist so links never
-   * dangle. Dev-only — never mounted in a build. Pass `false` to disable.
-   * Default: `{ pagesDir: 'src/pages' }`.
+   * With no `pagesDir`, the plugin auto-detects the first common Inertia layout
+   * that exists (Vite `src/pages`, Laravel `resources/js/Pages`, Inertia Rails
+   * `app/frontend/pages`, …) so the feature works outside the Vite-default
+   * layout instead of silently disabling. Set `pagesDir` to pin one exactly.
+   *
+   * Resolution is contained to the pages directory (a `../` component name is
+   * rejected), and the feature auto-disables when no directory exists so links
+   * never dangle. Dev-only — never mounted in a build. Pass `false` to disable.
    */
   sourceLinks?: boolean | { pagesDir?: string; extensions?: string[] }
 }
 
-const DEFAULT_PAGES_DIR = 'src/pages'
+/**
+ * Probed in order when no explicit `pagesDir` is given; the first that exists
+ * wins. Covers the layouts the official adapters ship: Vite starters, Laravel,
+ * and the Inertia Rails generator. An explicit `pagesDir` skips this entirely.
+ */
+const DEFAULT_PAGES_DIRS = [
+  'src/pages', // Vite / React & Vue starters, Inertia's own default
+  'resources/js/Pages', // Laravel convention (capitalised)
+  'resources/js/pages',
+  'app/frontend/pages', // current Inertia Rails generator
+  'app/javascript/pages', // older Inertia Rails
+]
 const DEFAULT_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.vue', '.svelte']
 const OPEN_ENDPOINT = '/__inertia-devtools/open'
 
 interface SourceLinksConfig {
   enabled: boolean
-  pagesDir: string
+  /** Explicit pages dir, or null to auto-detect from DEFAULT_PAGES_DIRS. */
+  pagesDir: string | null
   extensions: string[]
 }
 
 function normalizeSourceLinks(option: InertiaDevtoolsPluginOptions['sourceLinks']): SourceLinksConfig {
   if (option === false) {
-    return { enabled: false, pagesDir: DEFAULT_PAGES_DIR, extensions: DEFAULT_EXTENSIONS }
+    return { enabled: false, pagesDir: null, extensions: DEFAULT_EXTENSIONS }
   }
   const object = option && typeof option === 'object' ? option : {}
   return {
     enabled: true,
-    pagesDir: object.pagesDir ?? DEFAULT_PAGES_DIR,
+    pagesDir: object.pagesDir ?? null,
     extensions: object.extensions ?? DEFAULT_EXTENSIONS,
+  }
+}
+
+/**
+ * Absolute pages directory: the explicit `pagesDir` if set (resolved even when
+ * absent, so the existsSync gate in configResolved disables the feature), else
+ * the first auto-detected layout that exists. Falls back to the canonical
+ * default when none match — that path won't exist either, so the feature stays
+ * off rather than dangling.
+ */
+function resolvePagesDir(root: string, explicit: string | null): string {
+  if (explicit) return resolvePath(root, explicit)
+  for (const dir of DEFAULT_PAGES_DIRS) {
+    const absolute = resolvePath(root, dir)
+    if (existsSync(absolute)) return absolute
+  }
+  return resolvePath(root, DEFAULT_PAGES_DIRS[0])
+}
+
+/**
+ * True when a request's `Origin` matches the dev server it hit. Browsers attach
+ * a truthful, JS-unsettable `Origin` to every cross-site request, so this is
+ * what stops a page on evil.com from blind-firing the editor endpoint at a local
+ * Vite server. A missing Origin (curl, some same-origin GETs) is allowed — the
+ * POST-only guard already blocks the drive-by `<img>`/top-level-GET vector.
+ */
+export function isSameOriginRequest(origin: string | undefined, host: string | undefined): boolean {
+  if (!origin) return true
+  if (!host) return false
+  try {
+    return new URL(origin).host === host
+  } catch {
+    return false
   }
 }
 
@@ -229,7 +278,7 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       // only when enabled AND the pages directory actually exists — otherwise
       // every component name would be a dead link. `config.root` is absolute in
       // real Vite; guard it so a minimal/mock config can't throw in this hook.
-      pagesDirAbs = config.root ? resolvePath(config.root, sourceLinksConfig.pagesDir) : ''
+      pagesDirAbs = config.root ? resolvePagesDir(config.root, sourceLinksConfig.pagesDir) : ''
       sourceLinksActive = sourceLinksConfig.enabled && !strip && pagesDirAbs !== '' && existsSync(pagesDirAbs)
     },
     configureServer(server) {
@@ -239,6 +288,21 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       if (!sourceLinksActive) return
       server.middlewares.use(OPEN_ENDPOINT, (req, res) => {
         res.setHeader('content-type', 'application/json')
+        // Launching an editor is a state-changing action, so it must not be
+        // reachable by a cross-site GET (an <img>/link) or a drive-by request
+        // from another origin. Require POST and a same-origin Origin — together
+        // they reduce the endpoint to "only the dev app on this server can call
+        // it". Path containment (resolveComponentSource) is the second wall.
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.end(JSON.stringify({ error: 'method not allowed' }))
+          return
+        }
+        if (!isSameOriginRequest(req.headers.origin, req.headers.host)) {
+          res.statusCode = 403
+          res.end(JSON.stringify({ error: 'cross-origin request refused' }))
+          return
+        }
         const component = new URL(req.url ?? '', 'http://localhost').searchParams.get('component')
         if (!component) {
           res.statusCode = 400

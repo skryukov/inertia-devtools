@@ -151,7 +151,7 @@ inertiaDevtools({
 })
 ```
 
-`sourceLinks` mounts a dev-server endpoint that maps a component name to a file under your pages directory and opens it via `$EDITOR` (or `$INERTIA_DEVTOOLS_EDITOR`). It defaults on, resolving against `src/pages`, and auto-disables when that directory is absent so links never dangle. Point it elsewhere with `sourceLinks: { pagesDir: 'resources/js/Pages' }` (optionally `extensions: [...]`), or turn it off with `sourceLinks: false`. Resolution is contained to `pagesDir`, so a component name can never escape it.
+`sourceLinks` mounts a dev-server endpoint that maps a component name to a file under your pages directory and opens it via `$EDITOR` (or `$INERTIA_DEVTOOLS_EDITOR`). It defaults on and auto-detects the first common Inertia layout that exists — Vite `src/pages`, Laravel `resources/js/Pages`, Inertia Rails `app/frontend/pages`, and a few more — so it works outside the Vite-default layout instead of silently disabling. Pin one exactly with `sourceLinks: { pagesDir: 'resources/js/Pages' }` (optionally `extensions: [...]`), or turn it off with `sourceLinks: false`. When no layout is found the feature disables so links never dangle. Resolution is contained to the pages directory, so a component name can never escape it, and the endpoint accepts only same-origin `POST`s so a malicious page can't blind-fire your editor.
 
 ## How It Works
 

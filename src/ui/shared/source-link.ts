@@ -8,7 +8,12 @@
 export async function openComponentSource(component: string): Promise<{ ok: boolean; message: string }> {
   if (!component) return { ok: false, message: 'No component to open' }
   try {
-    const response = await fetch(`/__inertia-devtools/open?component=${encodeURIComponent(component)}`)
+    // POST, not GET: the endpoint launches an editor, so it rejects cross-site
+    // GETs and cross-origin callers. This request is same-origin (served by the
+    // same Vite dev server), so it passes the plugin's Origin check.
+    const response = await fetch(`/__inertia-devtools/open?component=${encodeURIComponent(component)}`, {
+      method: 'POST',
+    })
     if (response.ok) {
       const data = (await response.json().catch(() => ({}))) as { resolved?: string }
       const name = data.resolved ? (data.resolved.split(/[/\\]/).pop() ?? component) : component

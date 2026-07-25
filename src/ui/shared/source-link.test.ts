@@ -39,11 +39,11 @@ describe('openComponentSource', () => {
     expect(await openComponentSource('Users')).toEqual({ ok: false, message: 'Source links unavailable' })
   })
 
-  it('url-encodes the component name', async () => {
+  it('url-encodes the component name and POSTs (never a state-changing GET)', async () => {
     const spy = vi.fn(async () => fakeRes(200, {}))
     vi.stubGlobal('fetch', spy)
     await openComponentSource('admin/Index')
-    expect(spy).toHaveBeenCalledWith('/__inertia-devtools/open?component=admin%2FIndex')
+    expect(spy).toHaveBeenCalledWith('/__inertia-devtools/open?component=admin%2FIndex', { method: 'POST' })
   })
 
   it('short-circuits an empty component without a request', async () => {
