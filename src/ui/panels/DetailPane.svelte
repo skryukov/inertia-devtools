@@ -135,12 +135,7 @@
           </div>
         {/if}
         {#if ctx.canAct}
-          <button
-            class="copy-btn"
-            onclick={handleReplay}
-            disabled={!canReplay || replaying}
-            title={replayTitle}
-          >
+          <button class="copy-btn" onclick={handleReplay} disabled={!canReplay || replaying} title={replayTitle}>
             <svg
               width="12"
               height="12"
