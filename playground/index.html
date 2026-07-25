@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Inertia Devtools Playground</title>
+    <script>
+      // smoke-test instrumentation: surface swallowed errors to the driver
+      window.__errs = []
+      window.addEventListener('error', (e) => __errs.push(String((e.error && e.error.stack) || e.message)))
+      window.addEventListener('unhandledrejection', (e) =>
+        __errs.push('rejection: ' + String((e.reason && e.reason.stack) || e.reason)),
+      )
+    </script>
+    <style>
+      body {
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        max-width: 720px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        line-height: 1.5;
+      }
+      nav a {
+        margin-right: 1rem;
+      }
+      button {
+        margin: 0.25rem 0.5rem 0.25rem 0;
+      }
+      .flash {
+        background: #d1fae5;
+        border: 1px solid #10b981;
+        padding: 0.5rem 1rem;
+        border-radius: 6px;
+      }
+      .hint {
+        color: #666;
+        font-size: 0.875rem;
+      }
+      table {
+        border-collapse: collapse;
+      }
+      td,
+      th {
+        border: 1px solid #ddd;
+        padding: 0.25rem 0.75rem;
+        text-align: left;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

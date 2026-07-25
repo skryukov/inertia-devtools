@@ -51,3 +51,26 @@ jobs:
       - run: npm ci
       - run: npm install --no-save @inertiajs/core@${{ matrix.inertia }}
       - run: npm run typecheck && npm test
+
+  # Drives the real playground (a protocol-accurate fake Inertia server) in a
+  # real browser and asserts the built devtools UI — the coverage the unit
+  # suite's synthetic CustomEvents can't give. This is what makes the compat
+  # matrix mean something: a protocol/event-shape drift fails here, not silently.
+  e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      # The playground serves the devtools from the repo's built dist/, so it
+      # must exist before the browser loads the panel.
+      - run: npm run build
+      - run: npm --prefix playground install
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
