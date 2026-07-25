@@ -45,3 +45,20 @@ test('the /bugs deferred-500 makes the diagnostics engine fire in a real browser
   // proven end-to-end rather than against a hand-built CustomEvent.
   await expect(panel(page).getByText('Deferred props failed to load')).toBeVisible({ timeout: 10_000 })
 })
+
+test('clicking the live component name asks the dev server to open its source', async ({ page }) => {
+  await openPanel(page)
+
+  // With source links enabled (the plugin default), the live component name is
+  // a button. Clicking it hits the plugin's dev-server endpoint, which resolves
+  // the name to a file under the playground's pages dir. (The webServer points
+  // the editor at a no-op, so nothing actually launches during the test.)
+  const [response] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes('/__inertia-devtools/open')),
+    panel(page).locator('.live-component.as-link').click(),
+  ])
+  expect(response.status()).toBe(200)
+  const body = await response.json()
+  // The playground's "/" route renders the Home component.
+  expect(body.resolved).toContain('pages/Home')
+})

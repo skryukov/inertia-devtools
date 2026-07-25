@@ -15,7 +15,7 @@ import { resetMediaQueries } from '../test-setup'
 function fakeClient(): StoreClient {
   const state = { requests: [], currentPage: null } as unknown as DevToolsState
   return {
-    hello: { docsProvider: 'inertiajs', previousSessionRequests: [], canAct: true },
+    hello: { docsProvider: 'inertiajs', previousSessionRequests: [], canAct: true, sourceLinks: false },
     getState: () => state,
     subscribe: () => () => {},
     clear: () => {},

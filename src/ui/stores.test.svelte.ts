@@ -37,7 +37,7 @@ function fakeClient(requests: RequestRecord[] = []): FakeClient {
   const state = { requests, currentPage: null } as unknown as DevToolsState
   return {
     state,
-    hello: { docsProvider: 'inertiajs', previousSessionRequests: [], canAct: true },
+    hello: { docsProvider: 'inertiajs', previousSessionRequests: [], canAct: true, sourceLinks: false },
     getState: () => state,
     subscribe(fn) {
       listeners.add(fn)

@@ -26,6 +26,10 @@
     showRaw?: boolean
     visitId?: number
     docsProvider?: DocsProvider
+    /** The dev server can open component sources — renders the name as a link. */
+    sourceLinks?: boolean
+    /** Open the given component's source in the editor (parent shows the toast). */
+    onOpenSource?: (component: string) => void
     /** Selected request record — enables the "Copy diff" affordance. */
     request?: RequestRecord
     /** Called after a copy action so the parent can show its toast. */
@@ -44,6 +48,8 @@
     showRaw: externalShowRaw,
     visitId,
     docsProvider,
+    sourceLinks = false,
+    onOpenSource,
     request,
     onCopied,
   }: Props = $props()
@@ -172,7 +178,18 @@
     <span class="live-dot"></span>
     <span class="live-label">Live</span>
     <span class="live-separator"></span>
-    <span class="live-component">{componentName ?? page?.component}</span>
+    {#if sourceLinks && (componentName ?? page?.component)}
+      <button
+        type="button"
+        class="live-component as-link"
+        title="Open source in editor"
+        onclick={() => onOpenSource?.((componentName ?? page?.component)!)}
+      >
+        {componentName ?? page?.component}
+      </button>
+    {:else}
+      <span class="live-component">{componentName ?? page?.component}</span>
+    {/if}
     {#if errorCount > 0}
       <span class="live-error-badge">{errorCount} {errorCount === 1 ? 'error' : 'errors'}</span>
     {/if}
@@ -515,6 +532,21 @@
     font-size: 13px;
     font-weight: 600;
     color: var(--dt-accent);
+  }
+
+  /* Same look as the plain name, but an interactive button that opens source. */
+  .live-component.as-link {
+    font-family: inherit;
+    line-height: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+
+  .live-component.as-link:hover {
+    text-decoration: underline;
   }
 
   .live-error-badge {

@@ -67,6 +67,11 @@ export class DevToolsStore {
     return this.options.docsProvider ?? 'inertiajs'
   }
 
+  /** True only when the Vite plugin mounted its source-open endpoint (dev). */
+  get sourceLinks(): boolean {
+    return this.options.sourceLinks === true
+  }
+
   isInertiaRequestUrl(url: string): boolean {
     return this.correlator.hasRequestWithUrl(url)
   }

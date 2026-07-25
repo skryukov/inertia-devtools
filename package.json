@@ -71,6 +71,7 @@
     "@playwright/test": "^1.62.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@testing-library/svelte": "^5.0.0",
+    "@types/node": "^22.20.1",
     "@vitest/coverage-v8": "^3.2.7",
     "jsdom": "^28.1.0",
     "oxlint": "^1.50.0",

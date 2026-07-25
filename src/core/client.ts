@@ -11,6 +11,8 @@ export interface ClientHello {
   previousSessionRequests: SessionRequestSummary[]
   /** Router actions (replayVisit/reload) are available — a router was provided. */
   canAct: boolean
+  /** The dev server can open a component's source in the editor (Vite dev only). */
+  sourceLinks: boolean
 }
 
 // --- Protocol messages (future wire) ---
@@ -77,6 +79,7 @@ export function createInRealmClient(store: DevToolsStore): StoreClient {
       docsProvider: store.docsProvider,
       previousSessionRequests: store.previousSessionRequests,
       canAct: store.canAct,
+      sourceLinks: store.sourceLinks,
     },
     getState: () => store.getState(),
     subscribe: (fn) => store.subscribe(fn),

@@ -22,7 +22,10 @@ export default defineConfig({
       fileName: (_, entryName) => `${entryName}.js`,
     },
     rollupOptions: {
-      external: ['@inertiajs/core'],
+      // The `vite` entry is a Node plugin and imports node: builtins; keep them
+      // external so dist/vite.js stays real Node code. The browser entries
+      // (index/entry/auto) import none of these, so this is a no-op for them.
+      external: ['@inertiajs/core', /^node:/],
     },
     target: 'es2022',
     minify: false,

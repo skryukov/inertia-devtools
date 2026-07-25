@@ -1,9 +1,13 @@
 import type { Plugin } from 'vite'
 import type { DevToolsOptions } from './core/types'
+import { existsSync } from 'node:fs'
+// aliased: the plugin already has a `resolve` parameter in firstResolvable.
+import { resolve as resolvePath, sep } from 'node:path'
+import { spawn } from 'node:child_process'
 
 // `router` is excluded: the plugin injects the app's own router instance into
 // the generated init module — it cannot come from Vite config (not JSON).
-export interface InertiaDevtoolsPluginOptions extends Omit<DevToolsOptions, 'router'> {
+export interface InertiaDevtoolsPluginOptions extends Omit<DevToolsOptions, 'router' | 'sourceLinks'> {
   /**
    * Replace devtools imports with a no-op module in production builds so zero
    * devtools bytes ship. Set to `false` to intentionally ship devtools
@@ -11,6 +15,84 @@ export interface InertiaDevtoolsPluginOptions extends Omit<DevToolsOptions, 'rou
    * Default: `true`.
    */
   stripInProduction?: boolean
+  /**
+   * Make component names in the panel clickable, opening their source file in
+   * your editor. The plugin mounts a dev-server endpoint that maps a component
+   * name to a file under `pagesDir` and launches the editor ($EDITOR, or
+   * $INERTIA_DEVTOOLS_EDITOR).
+   *
+   * Resolution is contained to `pagesDir` (a `../` component name is rejected),
+   * and the feature auto-disables when `pagesDir` does not exist so links never
+   * dangle. Dev-only — never mounted in a build. Pass `false` to disable.
+   * Default: `{ pagesDir: 'src/pages' }`.
+   */
+  sourceLinks?: boolean | { pagesDir?: string; extensions?: string[] }
+}
+
+const DEFAULT_PAGES_DIR = 'src/pages'
+const DEFAULT_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.js', '.vue', '.svelte']
+const OPEN_ENDPOINT = '/__inertia-devtools/open'
+
+interface SourceLinksConfig {
+  enabled: boolean
+  pagesDir: string
+  extensions: string[]
+}
+
+function normalizeSourceLinks(option: InertiaDevtoolsPluginOptions['sourceLinks']): SourceLinksConfig {
+  if (option === false) {
+    return { enabled: false, pagesDir: DEFAULT_PAGES_DIR, extensions: DEFAULT_EXTENSIONS }
+  }
+  const object = option && typeof option === 'object' ? option : {}
+  return {
+    enabled: true,
+    pagesDir: object.pagesDir ?? DEFAULT_PAGES_DIR,
+    extensions: object.extensions ?? DEFAULT_EXTENSIONS,
+  }
+}
+
+/**
+ * Resolve an Inertia component name to a source file inside `pagesDirAbs`, or
+ * null. CONTAINMENT-GUARDED: a name like `../../secret` resolves outside the
+ * pages directory and is rejected before any filesystem access, so the browser
+ * can only ever ask the dev server to open files beneath the configured pages
+ * root — never an arbitrary path. Exported so the guard is unit-tested directly.
+ */
+export function resolveComponentSource(pagesDirAbs: string, extensions: string[], component: string): string | null {
+  if (!component) return null
+  const boundary = pagesDirAbs.endsWith(sep) ? pagesDirAbs : pagesDirAbs + sep
+  for (const extension of extensions) {
+    const candidate = resolvePath(pagesDirAbs, component + extension)
+    // Reject anything that escaped pagesDir (path traversal) before touching fs.
+    if (!candidate.startsWith(boundary)) continue
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+/**
+ * Best-effort open in the user's editor — zero-dependency by design. Honours
+ * $INERTIA_DEVTOOLS_EDITOR, then $EDITOR, defaulting to `code`, and uses the
+ * VS Code-family `-g file:line` form when the editor looks like one. A missing
+ * editor is swallowed: the endpoint still reports the resolved path.
+ */
+function openInEditor(file: string, line = 1): void {
+  const spec = process.env.INERTIA_DEVTOOLS_EDITOR || process.env.EDITOR || 'code'
+  const parts = spec.split(' ').filter(Boolean)
+  const command = parts[0] ?? 'code'
+  const preArgs = parts.slice(1)
+  const binary = command.split(/[/\\]/).pop() ?? command
+  const gotoCapable = /^(code|code-insiders|codium|vscodium|cursor|windsurf)$/i.test(binary)
+  const args = gotoCapable ? [...preArgs, '-g', `${file}:${line}`] : [...preArgs, file]
+  try {
+    const child = spawn(command, args, { stdio: 'ignore', detached: true })
+    child.on('error', () => {
+      /* editor binary not found — best-effort, nothing to do */
+    })
+    child.unref()
+  } catch {
+    /* spawn threw synchronously — best-effort, ignore */
+  }
 }
 
 const INIT_ID = '\0inertia-devtools-init'
@@ -80,7 +162,8 @@ function isSsrTransform(ctx: unknown, options: { ssr?: boolean } | undefined): b
  *   passes options.
  */
 export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plugin {
-  const { stripInProduction = true, ...runtimeOptions } = options
+  const { stripInProduction = true, sourceLinks, ...runtimeOptions } = options
+  const sourceLinksConfig = normalizeSourceLinks(sourceLinks)
   // Fail SAFE, not open. `configResolved` is a Vite-only hook, so a host that
   // consumes this through the plain Rollup interface never calls it and keeps
   // whatever this default says. It used to say "development": no stripping,
@@ -102,6 +185,11 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
    * isolated layout it is not, and hard-coding it broke the whole app.
    */
   let adapterSpecifier: string | undefined
+
+  // Resolved in configResolved: the absolute pages directory and whether the
+  // source-open endpoint should mount (dev + enabled + pagesDir exists).
+  let pagesDirAbs = ''
+  let sourceLinksActive = false
 
   return {
     name: 'inertia-devtools',
@@ -136,6 +224,36 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
       // since a manual `import 'inertia-devtools'` in app code under test would
       // otherwise still pull in and boot the real thing.
       strip = stripInProduction && (config.command === 'build' || isTestRunner)
+
+      // Source links are a dev-only affordance: never in a build or test run,
+      // only when enabled AND the pages directory actually exists — otherwise
+      // every component name would be a dead link. `config.root` is absolute in
+      // real Vite; guard it so a minimal/mock config can't throw in this hook.
+      pagesDirAbs = config.root ? resolvePath(config.root, sourceLinksConfig.pagesDir) : ''
+      sourceLinksActive = sourceLinksConfig.enabled && !strip && pagesDirAbs !== '' && existsSync(pagesDirAbs)
+    },
+    configureServer(server) {
+      // Only mounts in dev when active (see configResolved). Maps a component
+      // name to a file under pagesDir and opens it in the editor. The resolver
+      // is containment-guarded, so a crafted `?component=../../x` cannot escape.
+      if (!sourceLinksActive) return
+      server.middlewares.use(OPEN_ENDPOINT, (req, res) => {
+        res.setHeader('content-type', 'application/json')
+        const component = new URL(req.url ?? '', 'http://localhost').searchParams.get('component')
+        if (!component) {
+          res.statusCode = 400
+          res.end(JSON.stringify({ error: 'missing ?component' }))
+          return
+        }
+        const file = resolveComponentSource(pagesDirAbs, sourceLinksConfig.extensions, component)
+        if (!file) {
+          res.statusCode = 404
+          res.end(JSON.stringify({ component, resolved: null }))
+          return
+        }
+        openInEditor(file)
+        res.end(JSON.stringify({ component, resolved: file }))
+      })
     },
     resolveId(source, importer) {
       // Both the package and its side-effect entry are intercepted: a build must
@@ -164,7 +282,11 @@ export function inertiaDevtools(options: InertiaDevtoolsPluginOptions = {}): Plu
         const routerSpecifier = await firstResolvable([adapterSpecifier, '@inertiajs/core'], (source) =>
           this.resolve(source),
         )
-        const optionsJson = JSON.stringify(runtimeOptions)
+        // Add the capability flag only when the open endpoint is actually live;
+        // when off, omit it (the store reads an absent flag as false) so the
+        // injected options — and every test asserting them — stay as before.
+        const clientOptions = sourceLinksActive ? { ...runtimeOptions, sourceLinks: true } : runtimeOptions
+        const optionsJson = JSON.stringify(clientOptions)
         // This module executes inside the APP's module graph, so it can import
         // the app's own router instance (the devtools bundle itself must never
         // import @inertiajs/core — peer dep, would double-bundle) and hand it

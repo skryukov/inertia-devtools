@@ -306,6 +306,9 @@ export function createDevToolsContext(client: StoreClient, options: DevToolsCont
     get canAct() {
       return client.hello.canAct
     },
+    get sourceLinks() {
+      return client.hello.sourceLinks
+    },
     get resolvedTheme() {
       return resolvedTheme
     },

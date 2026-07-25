@@ -122,6 +122,7 @@ Every tab has a context-aware Copy button: full request summary, props diff, eve
 - **Picture-in-Picture** -- pop the panel out into its own window
 - **Dark/light/system theme** with manual override
 - **Replay** -- re-issue a selected GET visit (same partial-reload keys) from the panel; non-GET replays are refused since they would re-submit the mutation. Needs the app's router — automatic with the Vite plugin, manual installs pass `router` in options
+- **Open in editor** -- with the Vite plugin, click the current component's name to jump straight to its source file in your editor (dev only, see below)
 - **Keyboard navigation** -- `Alt+Shift+D` toggles the panel; arrow keys browse requests, Escape deselects
 - **Previous session** -- requests from before page reload in a collapsible section
 - **Draggable trigger** -- floating icon with position persisted to localStorage
@@ -138,6 +139,19 @@ createInertiaDevtools({
   router, // pass @inertiajs/core's router to enable Replay (the Vite plugin injects it automatically)
 })
 ```
+
+### Vite plugin options
+
+The plugin takes the runtime options above plus a couple of build/dev-only ones:
+
+```ts
+inertiaDevtools({
+  stripInProduction: true, // replace devtools with a no-op in builds (default)
+  sourceLinks: true, // click a component name to open its source (dev only, default on)
+})
+```
+
+`sourceLinks` mounts a dev-server endpoint that maps a component name to a file under your pages directory and opens it via `$EDITOR` (or `$INERTIA_DEVTOOLS_EDITOR`). It defaults on, resolving against `src/pages`, and auto-disables when that directory is absent so links never dangle. Point it elsewhere with `sourceLinks: { pagesDir: 'resources/js/Pages' }` (optionally `extensions: [...]`), or turn it off with `sourceLinks: false`. Resolution is contained to `pagesDir`, so a component name can never escape it.
 
 ## How It Works
 

@@ -36,7 +36,7 @@ function getRecord(over: Partial<RequestRecord> = {}): RequestRecord {
 function fakeClient(replayVisit: () => void): StoreClient {
   const state = { requests: [getRecord()], currentPage: null } as unknown as DevToolsState
   return {
-    hello: { docsProvider: 'inertiajs', previousSessionRequests: [], canAct: true },
+    hello: { docsProvider: 'inertiajs', previousSessionRequests: [], canAct: true, sourceLinks: false },
     getState: () => state,
     subscribe: () => () => {},
     clear: () => {},

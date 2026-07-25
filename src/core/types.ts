@@ -243,6 +243,13 @@ export interface DevToolsOptions {
   /** Documentation site for feature links. Default: 'inertiajs' */
   docsProvider?: DocsProvider
   /**
+   * Whether the panel may open a component's source file in the editor. This is
+   * a capability flag the UI reads: the Vite plugin sets it to `true` only when
+   * its dev-server open endpoint is actually mounted. Not meant to be set by
+   * hand — the plugin's richer `sourceLinks` option controls it. Default: off.
+   */
+  sourceLinks?: boolean
+  /**
    * The app's own Inertia router — enables devtools actions (replay a visit,
    * reload). Injected automatically by the Vite plugin; manual-import users
    * may pass `router` from @inertiajs/core themselves.

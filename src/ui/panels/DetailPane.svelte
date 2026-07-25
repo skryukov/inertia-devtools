@@ -2,6 +2,7 @@
   import type { DevToolsContext } from '../stores.svelte'
   import { requestToMarkdown, eventsToMarkdown, networkToMarkdown, requestToJSON } from '../../core/markdown'
   import { copyToClipboard } from '../shared/clipboard'
+  import { openComponentSource } from '../shared/source-link'
   import { ICON_COPY, ICON_CLOSE } from '../shared/icons'
   import PageView from './PageView.svelte'
   import EventsTab from './EventsTab.svelte'
@@ -68,6 +69,10 @@
     if (!ctx.selectedRequest) return
     const ok = await copyToClipboard(requestToJSON(ctx.selectedRequest))
     showToast(ok ? 'Copied JSON!' : 'Copy failed — clipboard unavailable')
+  }
+
+  async function handleOpenSource(component: string) {
+    showToast((await openComponentSource(component)).message)
   }
 
   const panelId = 'dt-tabpanel'
@@ -212,6 +217,8 @@
         isLive={true}
         componentName={ctx.currentPage?.component}
         docsProvider={ctx.docsProvider}
+        sourceLinks={ctx.sourceLinks}
+        onOpenSource={handleOpenSource}
         onCopied={() => showToast('Copied!')}
       />
     </div>

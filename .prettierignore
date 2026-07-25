@@ -1,4 +1,6 @@
 dist/
 node_modules/
+# Playwright output
+test-results/
 # e2e fixture app — not library source; has its own toolchain
 playground/

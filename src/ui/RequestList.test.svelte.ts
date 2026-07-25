@@ -34,7 +34,7 @@ function record(over: Partial<RequestRecord>): RequestRecord {
 function fakeClient(requests: RequestRecord[]): StoreClient {
   const state = { requests, currentPage: null } as unknown as DevToolsState
   return {
-    hello: { docsProvider: 'inertiajs', previousSessionRequests: [], canAct: true },
+    hello: { docsProvider: 'inertiajs', previousSessionRequests: [], canAct: true, sourceLinks: false },
     getState: () => state,
     subscribe: () => () => {},
     clear: () => {},
